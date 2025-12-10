@@ -1,0 +1,32 @@
+plugins {
+    id 'buildlogic.java-application-conventions'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+dependencies {
+    implementation 'org.apache.commons:commons-text'
+    implementation project(':sql-parser')
+    implementation project(':ddl-parser')
+    implementation project(':dml-parser')
+    implementation("org.duckdb:duckdb_jdbc:1.4.2.0")
+
+    implementation 'com.h2database:h2:2.2.224'
+    implementation 'org.antlr:antlr4-runtime:4.7.2'
+}
+
+application {
+    mainClass = 'nnsql.Main'
+}
+
+tasks.register("import-data", JavaExec) {
+    dependsOn 'classes'
+    mainClass = 'nnsql.ImportData'
+    classpath = sourceSets.main.runtimeClasspath
+    standardInput = System.in
+    standardOutput = System.out
+}

@@ -1,0 +1,11 @@
+plugins {
+    id 'buildlogic.java-common-conventions'
+    id 'java-library'
+    id 'antlr'
+}
+
+dependencies {
+    antlr "org.antlr:antlr4:4.5"
+
+    implementation 'org.antlr:antlr4-runtime:4.7.2'
+}
