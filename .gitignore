@@ -1,3 +1,5 @@
+.DS_Store
+
 .gradle
 
 build
@@ -7,3 +9,15 @@ build
 .jdtls
 .ropeproject
 duckdb/
+
+.classpath
+
+**/bin/
+.vscode
+
+buildSrc
+.project
+
+.settings
+report
+
