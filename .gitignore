@@ -21,3 +21,6 @@ buildSrc
 .settings
 report
 
+docs/
+scripts/
+
