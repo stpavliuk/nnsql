@@ -3,9 +3,3 @@ plugins {
 }
 
 rootProject.name = 'nnsql-translator'
-
-include 'translator'
-include 'sql-parser'
-include 'ddl-parser'
-
-include 'dml-parser'
