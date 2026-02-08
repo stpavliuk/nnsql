@@ -1,0 +1,22 @@
+root = true
+
+[*]
+
+end_of_line = lf
+charset = utf-8
+trim_trailing_whitespace = true
+insert_final_newline = true
+
+indent_style = space
+indent_size = 4
+
+[*.{ts,tsx,js,jsx,json,css,scss,yml,html,vue,py}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.java]
+ij_java_align_multiline_chained_methods = true
+ij_java_method_call_chain_wrap = split_into_lines
+indent_size = 4
