@@ -1,5 +1,10 @@
 plugins {
-    id 'buildlogic.java-application-conventions'
+    id 'java'
+    id 'application'
+}
+
+repositories {
+    mavenCentral()
 }
 
 java {
@@ -9,15 +14,22 @@ java {
 }
 
 dependencies {
-    implementation 'org.apache.commons:commons-text'
+    implementation 'org.apache.commons:commons-text:1.15.0'
     implementation 'com.github.jsqlparser:jsqlparser:5.3'
-    implementation("org.duckdb:duckdb_jdbc:1.4.2.0")
-
+    implementation 'org.duckdb:duckdb_jdbc:1.4.2.0'
     implementation 'com.h2database:h2:2.2.224'
+
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.12.1'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 application {
     mainClass = 'nnsql.Main'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
 }
 
 tasks.register("import-data", JavaExec) {
