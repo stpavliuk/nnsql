@@ -8,9 +8,7 @@ import net.sf.jsqlparser.schema.Column;
 import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.select.*;
 import nnsql.query.SchemaRegistry;
-import nnsql.query.ir.Condition;
-import nnsql.query.ir.IRNode;
-import nnsql.query.ir.Relation;
+import nnsql.query.ir.*;
 import nnsql.query.ir.Return.AttributeRef;
 
 import java.util.ArrayList;
@@ -111,13 +109,13 @@ public class IRBuilder {
         };
     }
 
-    nnsql.query.ir.Expression toExpression(net.sf.jsqlparser.expression.Expression expr) {
+    IRExpression toExpression(Expression expr) {
         return switch (expr) {
             case Column col -> toColumnRef(col);
-            case LongValue lv -> nnsql.query.ir.Expression.number((double) lv.getValue());
-            case DoubleValue dv -> nnsql.query.ir.Expression.number(dv.getValue());
-            case StringValue sv -> nnsql.query.ir.Expression.string(sv.getValue());
-            case NullValue _ -> nnsql.query.ir.Expression.nullValue();
+            case LongValue lv -> IRExpression.number((double) lv.getValue());
+            case DoubleValue dv -> IRExpression.number(dv.getValue());
+            case StringValue sv -> IRExpression.string(sv.getValue());
+            case NullValue _ -> IRExpression.nullValue();
             case Function fn when isAggregate(fn) -> toAggregate(fn, null);
             case ParenthesedExpressionList<?> p -> toExpression(p.getFirst());
             case ParenthesedSelect ps -> toScalarSubquery(ps);
@@ -126,34 +124,34 @@ public class IRBuilder {
         };
     }
 
-    private nnsql.query.ir.Expression.ColumnRef toColumnRef(Column col) {
+    private IRExpression.ColumnRef toColumnRef(Column col) {
         var table = col.getTable();
         var name = (table != null && table.getName() != null)
             ? table.getName() + "_" + col.getColumnName()
             : col.getColumnName();
-        return new nnsql.query.ir.Expression.ColumnRef(name);
+        return new IRExpression.ColumnRef(name);
     }
 
     private boolean isAggregate(Function fn) {
         return fn.getName() != null && AGGREGATE_FUNCTIONS.contains(fn.getName().toUpperCase());
     }
 
-    private nnsql.query.ir.Expression.Aggregate toAggregate(Function fn, String alias) {
+    private IRExpression.Aggregate toAggregate(Function fn, String alias) {
         var functionName = fn.getName().toUpperCase();
         var argument = fn.getParameters() != null && !fn.getParameters().isEmpty()
             ? toExpression(fn.getParameters().getFirst())
-            : new nnsql.query.ir.Expression.ColumnRef("*");
-        return new nnsql.query.ir.Expression.Aggregate(functionName, argument, alias);
+            : new IRExpression.ColumnRef("*");
+        return new IRExpression.Aggregate(functionName, argument, alias);
     }
 
-    private nnsql.query.ir.Expression.ScalarSubquery toScalarSubquery(ParenthesedSelect ps) {
+    private IRExpression.ScalarSubquery toScalarSubquery(ParenthesedSelect ps) {
         var subqueryIR = build((PlainSelect) ps.getSelect());
         var pipeline = new ArrayList<IRNode>();
         pipeline.addFirst(subqueryIR);
-        return new nnsql.query.ir.Expression.ScalarSubquery(pipeline);
+        return new IRExpression.ScalarSubquery(pipeline);
     }
 
-    Condition toCondition(net.sf.jsqlparser.expression.Expression expr) {
+    Condition toCondition(Expression expr) {
         return switch (expr) {
             case AndExpression and -> {
                 var operands = new ArrayList<Condition>();
@@ -169,7 +167,7 @@ public class IRBuilder {
             case IsNullExpression isn -> {
                 var col = toExpression(isn.getLeftExpression());
                 yield switch (col) {
-                    case nnsql.query.ir.Expression.ColumnRef(var name) ->
+                    case IRExpression.ColumnRef(var name) ->
                         new Condition.IsNull(name, isn.isNot());
                     default -> throw new IllegalArgumentException("IS NULL only on columns");
                 };
@@ -186,7 +184,7 @@ public class IRBuilder {
         };
     }
 
-    private void flattenAnd(net.sf.jsqlparser.expression.Expression expr, List<Condition> operands) {
+    private void flattenAnd(Expression expr, List<Condition> operands) {
         if (expr instanceof AndExpression and) {
             flattenAnd(and.getLeftExpression(), operands);
             flattenAnd(and.getRightExpression(), operands);
@@ -195,7 +193,7 @@ public class IRBuilder {
         }
     }
 
-    private void flattenOr(net.sf.jsqlparser.expression.Expression expr, List<Condition> operands) {
+    private void flattenOr(Expression expr, List<Condition> operands) {
         if (expr instanceof OrExpression or) {
             flattenOr(or.getLeftExpression(), operands);
             flattenOr(or.getRightExpression(), operands);
@@ -222,13 +220,13 @@ public class IRBuilder {
     private String extractAttributeName(SelectItem<?> item) {
         var expr = item.getExpression();
         return switch (toExpression(expr)) {
-            case nnsql.query.ir.Expression.ColumnRef col -> col.columnName();
-            case nnsql.query.ir.Expression.Literal _ ->
+            case IRExpression.ColumnRef col -> col.columnName();
+            case IRExpression.Literal _ ->
                 throw new IllegalArgumentException("Cannot use literal in SELECT without alias");
-            case nnsql.query.ir.Expression.Arithmetic _ ->
+            case IRExpression.Arithmetic _ ->
                 throw new IllegalArgumentException("Cannot use arithmetic expression in SELECT without alias");
-            case nnsql.query.ir.Expression.Aggregate agg -> agg.alias();
-            case nnsql.query.ir.Expression.ScalarSubquery _ ->
+            case IRExpression.Aggregate agg -> agg.alias();
+            case IRExpression.ScalarSubquery _ ->
                 throw new IllegalArgumentException("Cannot use scalar subquery in SELECT without alias");
         };
     }
@@ -305,7 +303,7 @@ public class IRBuilder {
         var functionName = fn.getName().toLowerCase();
         var argument = fn.getParameters() != null && !fn.getParameters().isEmpty()
             ? toExpression(fn.getParameters().getFirst())
-            : new nnsql.query.ir.Expression.ColumnRef("*");
+            : new IRExpression.ColumnRef("*");
         return functionName + "_" + argument.toString();
     }
 
@@ -327,7 +325,7 @@ public class IRBuilder {
         }
 
         var selectItems = select.getSelectItems();
-        var aggregates = new ArrayList<nnsql.query.ir.Expression.Aggregate>();
+        var aggregates = new ArrayList<IRExpression.Aggregate>();
 
         for (var selectItem : selectItems) {
             var expr = selectItem.getExpression();
@@ -337,7 +335,7 @@ public class IRBuilder {
                 var functionName = fn.getName().toUpperCase();
                 var argument = fn.getParameters() != null && !fn.getParameters().isEmpty()
                     ? toExpression(fn.getParameters().getFirst())
-                    : new nnsql.query.ir.Expression.ColumnRef("*");
+                    : new IRExpression.ColumnRef("*");
 
                 String alias;
                 if (selectItem.getAlias() != null) {
@@ -347,29 +345,29 @@ public class IRBuilder {
                 }
 
                 var qualifiedArgument = qualifyAggregateArgument(argument, availableAttrs);
-                aggregates.add(new nnsql.query.ir.Expression.Aggregate(functionName, qualifiedArgument, alias));
+                aggregates.add(new IRExpression.Aggregate(functionName, qualifiedArgument, alias));
             }
         }
 
         var outputAttributes = new ArrayList<String>();
         outputAttributes.addAll(groupingAttributes);
         outputAttributes.addAll(aggregates.stream()
-            .map(nnsql.query.ir.Expression.Aggregate::alias)
+            .map(IRExpression.Aggregate::alias)
             .toList());
 
         return pipeline.group(groupingAttributes, aggregates, outputAttributes);
     }
 
-    private nnsql.query.ir.Expression qualifyAggregateArgument(
-        nnsql.query.ir.Expression expr, List<String> availableAttrs
+    private IRExpression qualifyAggregateArgument(
+        IRExpression expr, List<String> availableAttrs
     ) {
         return switch (expr) {
-            case nnsql.query.ir.Expression.ColumnRef(var columnName) ->
-                new nnsql.query.ir.Expression.ColumnRef(AttributeResolver.resolve(columnName, availableAttrs));
-            case nnsql.query.ir.Expression.Literal lit -> lit;
-            case nnsql.query.ir.Expression.Arithmetic _,
-                 nnsql.query.ir.Expression.Aggregate _,
-                 nnsql.query.ir.Expression.ScalarSubquery _ -> expr;
+            case IRExpression.ColumnRef(var columnName) ->
+                new IRExpression.ColumnRef(AttributeResolver.resolve(columnName, availableAttrs));
+            case IRExpression.Literal lit -> lit;
+            case IRExpression.Arithmetic _,
+                 IRExpression.Aggregate _,
+                 IRExpression.ScalarSubquery _ -> expr;
         };
     }
 }

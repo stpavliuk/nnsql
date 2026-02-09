@@ -36,10 +36,10 @@ public class AttributeResolver {
         };
     }
 
-    private static Expression qualifyExpression(Expression expr, List<String> availableAttrs) {
-        if (expr instanceof Expression.ColumnRef(var columnName)) {
+    private static IRExpression qualifyExpression(IRExpression expr, List<String> availableAttrs) {
+        if (expr instanceof IRExpression.ColumnRef(var columnName)) {
             var qualifiedName = resolve(columnName, availableAttrs);
-            return new Expression.ColumnRef(qualifiedName);
+            return new IRExpression.ColumnRef(qualifiedName);
         }
 
         return expr;

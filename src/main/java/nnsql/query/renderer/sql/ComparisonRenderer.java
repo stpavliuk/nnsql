@@ -17,53 +17,53 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
 
     private String render(Condition.Comparison comp, String rel, boolean negate, RenderContext ctx) {
         return switch (comp.left()) {
-            case Expression.ColumnRef(var col) ->
+            case IRExpression.ColumnRef(var col) ->
                 renderWithColumn(col, comp.right(), comp.operator(), rel, negate, ctx);
 
-            case Expression.Literal lit ->
+            case IRExpression.Literal lit ->
                 renderWithLiteral(lit, comp.right(), comp.operator(), rel, negate, ctx);
 
-            case Expression.ScalarSubquery _ ->
+            case IRExpression.ScalarSubquery _ ->
                 throw unsupported("Scalar subquery on left side of comparison");
 
-            case Expression.Arithmetic _, Expression.Aggregate _ ->
+            case IRExpression.Arithmetic _, IRExpression.Aggregate _ ->
                 throw unsupported(comp.left().getClass().getSimpleName());
         };
     }
 
-    private String renderWithColumn(String col, Expression right, String op, String rel, boolean negate, RenderContext ctx) {
+    private String renderWithColumn(String col, IRExpression right, String op, String rel, boolean negate, RenderContext ctx) {
         return switch (right) {
-            case Expression.ColumnRef(var rightCol) ->
+            case IRExpression.ColumnRef(var rightCol) ->
                 Format.existsColumnToColumn(rel, col, rightCol, op, negate);
 
-            case Expression.Literal lit ->
+            case IRExpression.Literal lit ->
                 Format.existsColumnToLiteral(rel, col, op, Format.literal(lit), negate);
 
-            case Expression.ScalarSubquery subq ->
+            case IRExpression.ScalarSubquery subq ->
                 Format.existsColumnToSubquery(rel, col, op, renderSubquery(subq, ctx), negate);
 
-            case Expression.Arithmetic _, Expression.Aggregate _ ->
+            case IRExpression.Arithmetic _, IRExpression.Aggregate _ ->
                 throw unsupported(right.getClass().getSimpleName());
         };
     }
 
-    private String renderWithLiteral(Expression.Literal lit, Expression right, String op, String rel, boolean negate, RenderContext ctx) {
+    private String renderWithLiteral(IRExpression.Literal lit, IRExpression right, String op, String rel, boolean negate, RenderContext ctx) {
         return switch (right) {
-            case Expression.ColumnRef(var col) ->
+            case IRExpression.ColumnRef(var col) ->
                 Format.existsLiteralToColumn(rel, col, op, Format.literal(lit), negate);
 
-            case Expression.Literal rightLit ->
+            case IRExpression.Literal rightLit ->
                 (evaluateConstant(lit, rightLit, op) != negate) ? "TRUE" : "FALSE";
 
-            case Expression.ScalarSubquery subq ->
+            case IRExpression.ScalarSubquery subq ->
                 "%s %s (%s)".formatted(Format.literal(lit), op, renderSubquery(subq, ctx));
 
-            case Expression.Arithmetic _, Expression.Aggregate _ ->
+            case IRExpression.Arithmetic _, IRExpression.Aggregate _ ->
                 throw unsupported(right.getClass().getSimpleName());
         };
     }
 
-    private String renderSubquery(Expression.ScalarSubquery subquery, RenderContext ctx) {
+    private String renderSubquery(IRExpression.ScalarSubquery subquery, RenderContext ctx) {
         if (subquery.subqueryPipeline().isEmpty()) {
             throw new IllegalStateException("Scalar subquery has empty pipeline");
         }
@@ -96,7 +96,7 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         };
     }
 
-    private boolean evaluateConstant(Expression.Literal left, Expression.Literal right, String op) {
+    private boolean evaluateConstant(IRExpression.Literal left, IRExpression.Literal right, String op) {
         if (left.value() instanceof Number l && right.value() instanceof Number r) {
             double lv = l.doubleValue();
             double rv = r.doubleValue();

@@ -1,6 +1,6 @@
 package nnsql.query.ir;
 
-public sealed interface Expression {
+public sealed interface IRExpression {
 
     enum LiteralType {
         NUMBER,   // integer or decimal
@@ -28,14 +28,14 @@ public sealed interface Expression {
         return new Literal(value, type);
     }
 
-    record ColumnRef(String columnName) implements Expression {
+    record ColumnRef(String columnName) implements IRExpression {
         @Override
         public String toString() {
             return columnName;
         }
     }
 
-    record Literal(Object value, LiteralType type) implements Expression {
+    record Literal(Object value, LiteralType type) implements IRExpression {
         @Override
         public String toString() {
             return switch (type) {
@@ -46,7 +46,7 @@ public sealed interface Expression {
         }
     }
 
-    record Arithmetic(Expression left, String operator, Expression right) implements Expression {
+    record Arithmetic(IRExpression left, String operator, IRExpression right) implements IRExpression {
         public Arithmetic {
             throw new UnsupportedOperationException(
                 "Arithmetic expressions not yet implemented: " +
@@ -59,7 +59,7 @@ public sealed interface Expression {
         }
     }
 
-    record Aggregate(String function, Expression argument, String alias) implements Expression {
+    record Aggregate(String function, IRExpression argument, String alias) implements IRExpression {
         public Aggregate {
             var validFunctions = java.util.Set.of("SUM", "AVG", "COUNT", "MIN", "MAX");
             if (!validFunctions.contains(function.toUpperCase())) {
@@ -72,12 +72,12 @@ public sealed interface Expression {
             return "%s(%s) AS %s".formatted(function, argument, alias);
         }
 
-        public static Aggregate agg(String function, Expression argument, String alias) {
+        public static Aggregate agg(String function, IRExpression argument, String alias) {
             return new Aggregate(function.toUpperCase(), argument, alias);
         }
     }
 
-    record ScalarSubquery(java.util.List<IRNode> subqueryPipeline) implements Expression {
+    record ScalarSubquery(java.util.List<IRNode> subqueryPipeline) implements IRExpression {
         @Override
         public String toString() {
             return "(SUBQUERY)";

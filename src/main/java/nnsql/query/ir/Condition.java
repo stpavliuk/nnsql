@@ -5,31 +5,31 @@ import java.util.stream.Collectors;
 
 public sealed interface Condition {
 
-    static Comparison compare(Expression left, String operator, Expression right) {
+    static Comparison compare(IRExpression left, String operator, IRExpression right) {
         return new Comparison(left, right, operator);
     }
 
-    static Comparison eq(Expression left, Expression right) {
+    static Comparison eq(IRExpression left, IRExpression right) {
         return new Comparison(left, right, "=");
     }
 
-    static Comparison neq(Expression left, Expression right) {
+    static Comparison neq(IRExpression left, IRExpression right) {
         return new Comparison(left, right, "!=");
     }
 
-    static Comparison lt(Expression left, Expression right) {
+    static Comparison lt(IRExpression left, IRExpression right) {
         return new Comparison(left, right, "<");
     }
 
-    static Comparison gt(Expression left, Expression right) {
+    static Comparison gt(IRExpression left, IRExpression right) {
         return new Comparison(left, right, ">");
     }
 
-    static Comparison lte(Expression left, Expression right) {
+    static Comparison lte(IRExpression left, IRExpression right) {
         return new Comparison(left, right, "<=");
     }
 
-    static Comparison gte(Expression left, Expression right) {
+    static Comparison gte(IRExpression left, IRExpression right) {
         return new Comparison(left, right, ">=");
     }
 
@@ -61,7 +61,7 @@ public sealed interface Condition {
         return new Not(operand);
     }
 
-    record Comparison(Expression left, Expression right, String operator) implements Condition {
+    record Comparison(IRExpression left, IRExpression right, String operator) implements Condition {
         @Override
         public String toString() {
             return "%s %s %s".formatted(left, operator, right);
