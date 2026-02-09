@@ -1,15 +1,13 @@
 package nnsql;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-
 import nnsql.query.QueryTranslator;
 import nnsql.query.SchemaRegistry;
 import nnsql.query.renderer.sql.SQLIRRenderer;
-
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.*;
 
 import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
 
 class QueryTranslationTest {
     private QueryTranslator translator;
@@ -233,43 +231,43 @@ class QueryTranslationTest {
             "SELECT T.D FROM T WHERE T.E IS NULL",
             // language=sql
             """
-                WITH all_ids_product_0 AS (
-                SELECT T__ID.id || '_0' AS id,
-                       T__ID.id AS id1
-                FROM T__ID AS T__ID
-                ),
-                product_0_id AS (
-                SELECT id FROM all_ids_product_0
-                ),
-                product_0_T_D AS (
-                SELECT all_ids_product_0.id, T_D.v
-                FROM all_ids_product_0, T_D
-                WHERE all_ids_product_0.id1 = T_D.id
-                ),
-                product_0_T_E AS (
-                SELECT all_ids_product_0.id, T_E.v
-                FROM all_ids_product_0, T_E
-                WHERE all_ids_product_0.id1 = T_E.id
-                ),
-                filter_1_id AS (
-                SELECT product_0_id.id
-                FROM product_0_id
-                WHERE NOT EXISTS (SELECT * FROM product_0_T_E WHERE product_0_T_E.id = product_0_id.id)
-                ),
-                filter_1_T_D AS (
-                SELECT product_0_T_D.*
-                FROM product_0_T_D JOIN filter_1_id ON filter_1_id.id = product_0_T_D.id
-                ),
-                return_2_id AS (
-                SELECT id FROM filter_1_id
-                ),
-                return_2_attr_T_D AS (
-                SELECT id, v FROM filter_1_T_D
-                )
-                SELECT return_2_attr_T_D.v AS T_D
-                FROM return_2_id
-                JOIN return_2_attr_T_D ON return_2_id.id = return_2_attr_T_D.id;\
-            """);
+                    WITH all_ids_product_0 AS (
+                    SELECT T__ID.id || '_0' AS id,
+                           T__ID.id AS id1
+                    FROM T__ID AS T__ID
+                    ),
+                    product_0_id AS (
+                    SELECT id FROM all_ids_product_0
+                    ),
+                    product_0_T_D AS (
+                    SELECT all_ids_product_0.id, T_D.v
+                    FROM all_ids_product_0, T_D
+                    WHERE all_ids_product_0.id1 = T_D.id
+                    ),
+                    product_0_T_E AS (
+                    SELECT all_ids_product_0.id, T_E.v
+                    FROM all_ids_product_0, T_E
+                    WHERE all_ids_product_0.id1 = T_E.id
+                    ),
+                    filter_1_id AS (
+                    SELECT product_0_id.id
+                    FROM product_0_id
+                    WHERE NOT EXISTS (SELECT * FROM product_0_T_E WHERE product_0_T_E.id = product_0_id.id)
+                    ),
+                    filter_1_T_D AS (
+                    SELECT product_0_T_D.*
+                    FROM product_0_T_D JOIN filter_1_id ON filter_1_id.id = product_0_T_D.id
+                    ),
+                    return_2_id AS (
+                    SELECT id FROM filter_1_id
+                    ),
+                    return_2_attr_T_D AS (
+                    SELECT id, v FROM filter_1_T_D
+                    )
+                    SELECT return_2_attr_T_D.v AS T_D
+                    FROM return_2_id
+                    JOIN return_2_attr_T_D ON return_2_id.id = return_2_attr_T_D.id;\
+                """);
 
         assertQueryTranslation(
             // language=sql
@@ -321,8 +319,8 @@ class QueryTranslationTest {
         assertQueryTranslation(
             // language=sql
             """
-                select * from customer
-                where c_acctbal > 5000
+                SELECT * FROM customer
+                WHERE c_acctbal > 5000
                 """,
             // language=sql
             """
@@ -354,11 +352,11 @@ class QueryTranslationTest {
         assertQueryTranslation(
             // language=sql
             """
-                select c_mktsegment as mkt, count(c_custkey) as seg from customer
-                where c_nationkey = 15 and c_acctbal > (select avg(c_acctbal) as avg_accball from customer
-                    where c_acctbal > 0.00 and c_nationkey = 15)
-                group by c_mktsegment
-                having seg > 500
+                SELECT c_mktsegment AS mkt, COUNT(c_custkey) AS seg FROM customer
+                WHERE c_nationkey = 15 AND c_acctbal > (SELECT AVG(c_acctbal) AS avg_accball FROM customer
+                    WHERE c_acctbal > 0.00 AND c_nationkey = 15)
+                GROUP BY c_mktsegment
+                HAVING seg > 500
                 """,
             // language=sql
             """
@@ -504,6 +502,8 @@ class QueryTranslationTest {
     }
 
     private String normalizeWhitespace(String str) {
-        return str.trim().replaceAll("\\s+", " ");
+        return str
+            .trim()
+            .replaceAll("\\s+", " ");
     }
 }

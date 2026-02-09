@@ -11,12 +11,11 @@ import java.util.List;
 import static java.lang.IO.println;
 
 class TPCDSQueryTranslationTest {
-    private SchemaRegistry schemaRegistry;
     private QueryTranslator translator;
 
     @BeforeEach
     void setUp() {
-        schemaRegistry = new SchemaRegistry();
+        SchemaRegistry schemaRegistry = new SchemaRegistry();
         schemaRegistry.registerTable("customer", List.of(
             "c_customer_sk",
             "c_customer_id",
@@ -43,6 +42,7 @@ class TPCDSQueryTranslationTest {
 
     @Test
     void testCountWithOrConditions() {
+        // language=sql
         println(translator.translate("""
             SELECT
                 count(c_customer_id) as canada_academics
@@ -56,6 +56,7 @@ class TPCDSQueryTranslationTest {
 
     @Test
     void testCountWithNotAndIsNull() {
+        // language=sql
         println(translator.translate("""
             SELECT
                 count(c_customer_sk)
