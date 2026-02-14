@@ -52,7 +52,7 @@ class Expressions {
     }
 
     private static IRExpression.ScalarSubquery scalarSubquery(ParenthesedSelect ps, SchemaRegistry schema, AtomicInteger nodeIds) {
-        var subqueryIR = new IRBuilder(schema, nodeIds).build((PlainSelect) ps.getSelect());
+        var subqueryIR = Pipelines.buildQuery((PlainSelect) ps.getSelect(), schema, nodeIds);
         return new IRExpression.ScalarSubquery(subqueryIR);
     }
 }

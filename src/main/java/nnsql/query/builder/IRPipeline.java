@@ -101,18 +101,6 @@ public record IRPipeline(
         };
     }
 
-    // --- Legacy methods (kept for backward compatibility during refactor) ---
-
-    public IRPipeline product(List<Relation> relations) {
-        var productNode = new Product(relations, pipelineCounter.getAndIncrement());
-        var attrs = AttributeResolver.collectFromProduct(productNode);
-        return withNode(productNode, attrs);
-    }
-
-    public static IRPipeline start() {
-        return new IRPipeline(Option.none(), new AtomicInteger(0), List.of(), null, null);
-    }
-
     // --- Internal helpers ---
 
     private IRNode requireCurrent(String message) {

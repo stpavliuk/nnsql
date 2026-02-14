@@ -2,23 +2,21 @@ package nnsql.query;
 
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import net.sf.jsqlparser.statement.select.PlainSelect;
-import nnsql.query.builder.IRBuilder;
+import nnsql.query.builder.Pipelines;
 import nnsql.query.ir.IRNode;
 import nnsql.query.renderer.IRRenderer;
 
-public record QueryTranslator(IRBuilder irBuilder, IRRenderer renderer) {
-    public QueryTranslator(SchemaRegistry schema, IRRenderer renderer) {
-        this(new IRBuilder(schema), renderer);
-    }
+import java.util.concurrent.atomic.AtomicInteger;
+
+public record QueryTranslator(SchemaRegistry schema, IRRenderer renderer) {
 
     public String translate(String sqlQuery) {
-        var select = parseSelect(sqlQuery);
-        return renderer.render(irBuilder.build(select));
+        return renderer.render(toIR(sqlQuery));
     }
 
     public IRNode toIR(String sqlQuery) {
         var select = parseSelect(sqlQuery);
-        return irBuilder.build(select);
+        return Pipelines.buildQuery(select, schema, new AtomicInteger(0));
     }
 
     private static PlainSelect parseSelect(String sql) {

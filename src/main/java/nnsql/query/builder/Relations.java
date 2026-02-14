@@ -45,7 +45,7 @@ class Relations {
                 var alias = ps.getAlias() != null
                     ? ps.getAlias().getName()
                     : "subq" + nodeIds.getAndIncrement();
-                var subqueryIR = new IRBuilder(schema, nodeIds).build((PlainSelect) ps.getSelect());
+                var subqueryIR = Pipelines.buildQuery((PlainSelect) ps.getSelect(), schema, nodeIds);
                 var attributes = AttributeResolver.collectFrom(subqueryIR);
                 yield new Relation.Subquery(alias, subqueryIR, attributes);
             }
