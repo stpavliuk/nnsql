@@ -14,16 +14,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public record IRPipeline(
     Option<IRNode> current,
-    AtomicInteger nodeIdCounter,
+    AtomicInteger pipelineCounter,
     List<String> attributes,
-    SchemaRegistry schema
+    SchemaRegistry schema,
+    AtomicInteger nodeIds
 ) {
 
-    public static IRPipeline from(List<Relation> relations, SchemaRegistry schema) {
-        var counter = new AtomicInteger(0);
-        var productNode = new Product(relations, counter.getAndIncrement());
+    public static IRPipeline from(List<Relation> relations, AtomicInteger nodeIds, SchemaRegistry schema) {
+        var pipelineCounter = new AtomicInteger(0);
+        var productNode = new Product(relations, pipelineCounter.getAndIncrement());
         var attributes = AttributeResolver.collectFromProduct(productNode);
-        return new IRPipeline(Option.some(productNode), counter, attributes, schema);
+        return new IRPipeline(Option.some(productNode), pipelineCounter, attributes, schema, nodeIds);
     }
 
     public IRPipeline filter(Option<Condition> condition) {
@@ -48,6 +49,23 @@ public record IRPipeline(
         };
     }
 
+    public IRPipeline groupBy(SelectAnalysis analysis) {
+        if (!analysis.hasGroupBy() && !analysis.hasAggregates()) return this;
+        var groupingAttrs = analysis.resolveGroupByColumns(this.attributes);
+        var aggregates = analysis.extractAggregates(this.attributes, this.schema, this.nodeIds);
+        return group(groupingAttrs, aggregates);
+    }
+
+    public IRPipeline select(SelectAnalysis analysis) {
+        if (analysis.star()) return returnAll();
+        var refs = analysis.buildSelectRefs(this.attributes, this.schema, this.nodeIds);
+        return returnSelected(refs);
+    }
+
+    public IRPipeline distinctIf(boolean shouldApply) {
+        return shouldApply ? duplElim() : this;
+    }
+
     public IRPipeline group(
         List<String> groupingAttributes,
         List<IRExpression.Aggregate> aggregates
@@ -56,7 +74,7 @@ public record IRPipeline(
         var outputAttrs = new ArrayList<String>();
         outputAttrs.addAll(groupingAttributes);
         outputAttrs.addAll(aggregates.stream().map(IRExpression.Aggregate::alias).toList());
-        var groupNode = Group.of(node, groupingAttributes, aggregates, outputAttrs, nodeIdCounter.getAndIncrement());
+        var groupNode = Group.of(node, groupingAttributes, aggregates, outputAttrs, pipelineCounter.getAndIncrement());
         return withNode(groupNode, outputAttrs);
     }
 
@@ -86,38 +104,13 @@ public record IRPipeline(
     // --- Legacy methods (kept for backward compatibility during refactor) ---
 
     public IRPipeline product(List<Relation> relations) {
-        var productNode = new Product(relations, nodeIdCounter.getAndIncrement());
+        var productNode = new Product(relations, pipelineCounter.getAndIncrement());
         var attrs = AttributeResolver.collectFromProduct(productNode);
         return withNode(productNode, attrs);
     }
 
-    public IRPipeline filter(Condition condition, List<String> attrs) {
-        var node = requireCurrent("Cannot filter without a source");
-        return withNode(new Filter(node, condition, attrs), attrs);
-    }
-
-    public IRPipeline aggFilter(Condition condition, List<String> attrs) {
-        var node = requireCurrent("Cannot apply HAVING without a source");
-        return withNode(new AggFilter(node, condition, attrs), attrs);
-    }
-
-    public IRPipeline group(
-        List<String> groupingAttributes,
-        List<IRExpression.Aggregate> aggregates,
-        List<String> outputAttributes
-    ) {
-        var node = requireCurrent("Cannot group without a source");
-        var groupNode = Group.of(node, groupingAttributes, aggregates, outputAttributes, nodeIdCounter.getAndIncrement());
-        return withNode(groupNode, outputAttributes);
-    }
-
-    public IRPipeline duplElim(List<String> attrs) {
-        var node = requireCurrent("Cannot apply DISTINCT without a source");
-        return withNode(new DuplElim(node, attrs), attrs);
-    }
-
     public static IRPipeline start() {
-        return new IRPipeline(Option.none(), new AtomicInteger(0), List.of(), null);
+        return new IRPipeline(Option.none(), new AtomicInteger(0), List.of(), null, null);
     }
 
     // --- Internal helpers ---
@@ -130,6 +123,6 @@ public record IRPipeline(
     }
 
     private IRPipeline withNode(IRNode newCurrent, List<String> newAttributes) {
-        return new IRPipeline(Option.some(newCurrent), nodeIdCounter, newAttributes, schema);
+        return new IRPipeline(Option.some(newCurrent), pipelineCounter, newAttributes, schema, nodeIds);
     }
 }
