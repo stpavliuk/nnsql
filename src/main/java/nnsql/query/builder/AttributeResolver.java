@@ -37,12 +37,13 @@ public class AttributeResolver {
     }
 
     private static IRExpression qualifyExpression(IRExpression expr, List<String> availableAttrs) {
-        if (expr instanceof IRExpression.ColumnRef(var columnName)) {
-            var qualifiedName = resolve(columnName, availableAttrs);
-            return new IRExpression.ColumnRef(qualifiedName);
-        }
-
-        return expr;
+        return switch (expr) {
+            case IRExpression.ColumnRef(var columnName) ->
+                new IRExpression.ColumnRef(resolve(columnName, availableAttrs));
+            case IRExpression.Literal _,
+                 IRExpression.Aggregate _,
+                 IRExpression.ScalarSubquery _ -> expr;
+        };
     }
 
     public static List<String> collectFromProduct(Product product) {

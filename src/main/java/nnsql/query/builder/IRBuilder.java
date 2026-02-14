@@ -146,9 +146,7 @@ public class IRBuilder {
 
     private IRExpression.ScalarSubquery toScalarSubquery(ParenthesedSelect ps) {
         var subqueryIR = build((PlainSelect) ps.getSelect());
-        var pipeline = new ArrayList<IRNode>();
-        pipeline.addFirst(subqueryIR);
-        return new IRExpression.ScalarSubquery(pipeline);
+        return new IRExpression.ScalarSubquery(subqueryIR);
     }
 
     Condition toCondition(Expression expr) {
@@ -223,8 +221,6 @@ public class IRBuilder {
             case IRExpression.ColumnRef col -> col.columnName();
             case IRExpression.Literal _ ->
                 throw new IllegalArgumentException("Cannot use literal in SELECT without alias");
-            case IRExpression.Arithmetic _ ->
-                throw new IllegalArgumentException("Cannot use arithmetic expression in SELECT without alias");
             case IRExpression.Aggregate agg -> agg.alias();
             case IRExpression.ScalarSubquery _ ->
                 throw new IllegalArgumentException("Cannot use scalar subquery in SELECT without alias");
@@ -365,8 +361,7 @@ public class IRBuilder {
             case IRExpression.ColumnRef(var columnName) ->
                 new IRExpression.ColumnRef(AttributeResolver.resolve(columnName, availableAttrs));
             case IRExpression.Literal lit -> lit;
-            case IRExpression.Arithmetic _,
-                 IRExpression.Aggregate _,
+            case IRExpression.Aggregate _,
                  IRExpression.ScalarSubquery _ -> expr;
         };
     }

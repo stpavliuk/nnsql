@@ -26,7 +26,7 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.ScalarSubquery _ ->
                 throw unsupported("Scalar subquery on left side of comparison");
 
-            case IRExpression.Arithmetic _, IRExpression.Aggregate _ ->
+            case IRExpression.Aggregate _ ->
                 throw unsupported(comp.left().getClass().getSimpleName());
         };
     }
@@ -42,7 +42,7 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.ScalarSubquery subq ->
                 Format.existsColumnToSubquery(rel, col, op, renderSubquery(subq, ctx), negate);
 
-            case IRExpression.Arithmetic _, IRExpression.Aggregate _ ->
+            case IRExpression.Aggregate _ ->
                 throw unsupported(right.getClass().getSimpleName());
         };
     }
@@ -58,17 +58,13 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.ScalarSubquery subq ->
                 "%s %s (%s)".formatted(Format.literal(lit), op, renderSubquery(subq, ctx));
 
-            case IRExpression.Arithmetic _, IRExpression.Aggregate _ ->
+            case IRExpression.Aggregate _ ->
                 throw unsupported(right.getClass().getSimpleName());
         };
     }
 
     private String renderSubquery(IRExpression.ScalarSubquery subquery, RenderContext ctx) {
-        if (subquery.subqueryPipeline().isEmpty()) {
-            throw new IllegalStateException("Scalar subquery has empty pipeline");
-        }
-
-        var subqueryIR = subquery.subqueryPipeline().getFirst();
+        var subqueryIR = subquery.subquery();
         var finalBaseName = subqueryRenderer.apply(subqueryIR, ctx);
 
         var returnNode = findReturnNode(subqueryIR);
