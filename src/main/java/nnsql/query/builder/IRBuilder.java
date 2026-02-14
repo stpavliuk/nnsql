@@ -1,41 +1,40 @@
 package nnsql.query.builder;
 
-import net.sf.jsqlparser.expression.*;
-import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
-import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
-import net.sf.jsqlparser.expression.operators.relational.*;
+import net.sf.jsqlparser.expression.Function;
 import net.sf.jsqlparser.schema.Column;
-import net.sf.jsqlparser.schema.Table;
-import net.sf.jsqlparser.statement.select.*;
+import net.sf.jsqlparser.statement.select.AllColumns;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+import net.sf.jsqlparser.statement.select.SelectItem;
 import nnsql.query.SchemaRegistry;
 import nnsql.query.ir.*;
 import nnsql.query.ir.Return.AttributeRef;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class IRBuilder {
     private final SchemaRegistry schema;
-    private final AtomicInteger nodeIdCounter = new AtomicInteger(0);
-
-    private static final Set<String> AGGREGATE_FUNCTIONS =
-        Set.of("COUNT", "SUM", "AVG", "MIN", "MAX");
+    private final AtomicInteger nodeIdCounter;
 
     public IRBuilder(SchemaRegistry schema) {
+        this(schema, new AtomicInteger(0));
+    }
+
+    IRBuilder(SchemaRegistry schema, AtomicInteger nodeIdCounter) {
         this.schema = schema;
+        this.nodeIdCounter = nodeIdCounter;
     }
 
     public IRNode build(PlainSelect select) {
         var pipeline = IRPipeline.start();
 
-        var relations = extractRelations(select);
+        var relations = Relations.from(select, schema, nodeIdCounter);
         pipeline = pipeline.product(relations);
 
         if (select.getWhere() != null) {
             var attributes = AttributeResolver.collectFrom(pipeline.build());
-            var condition = toCondition(select.getWhere());
+            var condition = Conditions.from(select.getWhere(), schema, nodeIdCounter).get();
             var qualifiedCondition = AttributeResolver.qualifyCondition(condition, attributes);
             pipeline = pipeline.filter(qualifiedCondition, attributes);
         }
@@ -49,7 +48,7 @@ public class IRBuilder {
 
         if (select.getHaving() != null) {
             var attributes = AttributeResolver.collectFrom(pipeline.build());
-            var condition = toCondition(select.getHaving());
+            var condition = Conditions.from(select.getHaving(), schema, nodeIdCounter).get();
             var qualifiedCondition = AttributeResolver.qualifyCondition(condition, attributes);
             pipeline = pipeline.aggFilter(qualifiedCondition, attributes);
         }
@@ -68,147 +67,9 @@ public class IRBuilder {
         return pipeline.build();
     }
 
-    private List<Relation> extractRelations(PlainSelect select) {
-        var relations = new ArrayList<Relation>();
-        relations.add(toRelation(select.getFromItem()));
-
-        if (select.getJoins() != null) {
-            for (var join : select.getJoins()) {
-                relations.add(toRelation(join.getFromItem()));
-            }
-        }
-
-        return relations;
-    }
-
-    private Relation toRelation(FromItem from) {
-        return switch (from) {
-            case Table t -> {
-                var tableName = t.getName();
-                var alias = t.getAlias() != null ? t.getAlias().getName() : tableName;
-                var attributes = schema.getAttributes(tableName);
-
-                if (attributes.isEmpty()) {
-                    throw new IllegalArgumentException(
-                        "Table '%s' not found in schema. Please register the table schema first."
-                            .formatted(tableName));
-                }
-
-                yield new Relation.Table(tableName, alias, attributes);
-            }
-            case ParenthesedSelect ps -> {
-                var alias = ps.getAlias() != null
-                    ? ps.getAlias().getName()
-                    : "subq" + nodeIdCounter.getAndIncrement();
-                var subqueryIR = build((PlainSelect) ps.getSelect());
-                var attributes = AttributeResolver.collectFrom(subqueryIR);
-                yield new Relation.Subquery(alias, subqueryIR, attributes);
-            }
-            default -> throw new UnsupportedOperationException(
-                "Unsupported FROM item: " + from.getClass().getSimpleName());
-        };
-    }
-
-    IRExpression toExpression(Expression expr) {
-        return switch (expr) {
-            case Column col -> toColumnRef(col);
-            case LongValue lv -> IRExpression.number((double) lv.getValue());
-            case DoubleValue dv -> IRExpression.number(dv.getValue());
-            case StringValue sv -> IRExpression.string(sv.getValue());
-            case NullValue _ -> IRExpression.nullValue();
-            case Function fn when isAggregate(fn) -> toAggregate(fn, null);
-            case ParenthesedExpressionList<?> p -> toExpression(p.getFirst());
-            case ParenthesedSelect ps -> toScalarSubquery(ps);
-            default -> throw new UnsupportedOperationException(
-                "Unsupported expression: " + expr.getClass().getSimpleName());
-        };
-    }
-
-    private IRExpression.ColumnRef toColumnRef(Column col) {
-        var table = col.getTable();
-        var name = (table != null && table.getName() != null)
-            ? table.getName() + "_" + col.getColumnName()
-            : col.getColumnName();
-        return new IRExpression.ColumnRef(name);
-    }
-
-    private boolean isAggregate(Function fn) {
-        return fn.getName() != null && AGGREGATE_FUNCTIONS.contains(fn.getName().toUpperCase());
-    }
-
-    private IRExpression.Aggregate toAggregate(Function fn, String alias) {
-        var functionName = fn.getName().toUpperCase();
-        var argument = fn.getParameters() != null && !fn.getParameters().isEmpty()
-            ? toExpression(fn.getParameters().getFirst())
-            : new IRExpression.ColumnRef("*");
-        return new IRExpression.Aggregate(functionName, argument, alias);
-    }
-
-    private IRExpression.ScalarSubquery toScalarSubquery(ParenthesedSelect ps) {
-        var subqueryIR = build((PlainSelect) ps.getSelect());
-        return new IRExpression.ScalarSubquery(subqueryIR);
-    }
-
-    Condition toCondition(Expression expr) {
-        return switch (expr) {
-            case AndExpression and -> {
-                var operands = new ArrayList<Condition>();
-                flattenAnd(and, operands);
-                yield new Condition.And(operands);
-            }
-            case OrExpression or -> {
-                var operands = new ArrayList<Condition>();
-                flattenOr(or, operands);
-                yield new Condition.Or(operands);
-            }
-            case NotExpression not -> Condition.not(toCondition(not.getExpression()));
-            case IsNullExpression isn -> {
-                var col = toExpression(isn.getLeftExpression());
-                yield switch (col) {
-                    case IRExpression.ColumnRef(var name) ->
-                        new Condition.IsNull(name, isn.isNot());
-                    default -> throw new IllegalArgumentException("IS NULL only on columns");
-                };
-            }
-            case EqualsTo eq -> toComparison(eq, "=");
-            case NotEqualsTo neq -> toComparison(neq, "!=");
-            case GreaterThan gt -> toComparison(gt, ">");
-            case MinorThan lt -> toComparison(lt, "<");
-            case GreaterThanEquals gte -> toComparison(gte, ">=");
-            case MinorThanEquals lte -> toComparison(lte, "<=");
-            case ParenthesedExpressionList<?> p -> toCondition(p.getFirst());
-            default -> throw new UnsupportedOperationException(
-                "Unsupported condition: " + expr.getClass().getSimpleName());
-        };
-    }
-
-    private void flattenAnd(Expression expr, List<Condition> operands) {
-        if (expr instanceof AndExpression and) {
-            flattenAnd(and.getLeftExpression(), operands);
-            flattenAnd(and.getRightExpression(), operands);
-        } else {
-            operands.add(toCondition(expr));
-        }
-    }
-
-    private void flattenOr(Expression expr, List<Condition> operands) {
-        if (expr instanceof OrExpression or) {
-            flattenOr(or.getLeftExpression(), operands);
-            flattenOr(or.getRightExpression(), operands);
-        } else {
-            operands.add(toCondition(expr));
-        }
-    }
-
-    private Condition toComparison(ComparisonOperator op, String operator) {
-        var left = toExpression(op.getLeftExpression());
-        var right = toExpression(op.getRightExpression());
-        return Condition.compare(left, operator, right);
-    }
-
     private boolean hasAggregatesInSelect(PlainSelect select) {
         for (var item : select.getSelectItems()) {
-            if (item.getExpression() instanceof Function fn && isAggregate(fn)) {
+            if (item.getExpression() instanceof Function fn && Expressions.isAggregate(fn)) {
                 return true;
             }
         }
@@ -217,7 +78,7 @@ public class IRBuilder {
 
     private String extractAttributeName(SelectItem<?> item) {
         var expr = item.getExpression();
-        return switch (toExpression(expr)) {
+        return switch (Expressions.from(expr, schema, nodeIdCounter)) {
             case IRExpression.ColumnRef col -> col.columnName();
             case IRExpression.Literal _ ->
                 throw new IllegalArgumentException("Cannot use literal in SELECT without alias");
@@ -276,7 +137,7 @@ public class IRBuilder {
             String alias;
             String resolvedAttrName;
 
-            if (expr instanceof Function fn && isAggregate(fn)) {
+            if (expr instanceof Function fn && Expressions.isAggregate(fn)) {
                 alias = selectItem.getAlias() != null
                     ? selectItem.getAlias().getName()
                     : generateDefaultAggregateAlias(fn);
@@ -298,7 +159,7 @@ public class IRBuilder {
     private String generateDefaultAggregateAlias(Function fn) {
         var functionName = fn.getName().toLowerCase();
         var argument = fn.getParameters() != null && !fn.getParameters().isEmpty()
-            ? toExpression(fn.getParameters().getFirst())
+            ? Expressions.from(fn.getParameters().getFirst(), schema, nodeIdCounter)
             : new IRExpression.ColumnRef("*");
         return functionName + "_" + argument.toString();
     }
@@ -311,7 +172,7 @@ public class IRBuilder {
             var groupByExprs = new ArrayList<String>();
             for (var expr : select.getGroupBy().getGroupByExpressionList()) {
                 if (expr instanceof Column col) {
-                    var colRef = toColumnRef(col);
+                    var colRef = Expressions.columnRef(col);
                     groupByExprs.add(AttributeResolver.resolve(colRef.columnName(), availableAttrs));
                 }
             }
@@ -327,10 +188,10 @@ public class IRBuilder {
             var expr = selectItem.getExpression();
             if (expr instanceof AllColumns) continue;
 
-            if (expr instanceof Function fn && isAggregate(fn)) {
+            if (expr instanceof Function fn && Expressions.isAggregate(fn)) {
                 var functionName = fn.getName().toUpperCase();
                 var argument = fn.getParameters() != null && !fn.getParameters().isEmpty()
-                    ? toExpression(fn.getParameters().getFirst())
+                    ? Expressions.from(fn.getParameters().getFirst(), schema, nodeIdCounter)
                     : new IRExpression.ColumnRef("*");
 
                 String alias;
