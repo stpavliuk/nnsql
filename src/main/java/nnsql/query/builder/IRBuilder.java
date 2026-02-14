@@ -27,17 +27,9 @@ public class IRBuilder {
     }
 
     public IRNode build(PlainSelect select) {
-        var pipeline = IRPipeline.start();
+        var pipeline = IRPipeline.from(Relations.from(select, schema, nodeIdCounter), schema);
 
-        var relations = Relations.from(select, schema, nodeIdCounter);
-        pipeline = pipeline.product(relations);
-
-        if (select.getWhere() != null) {
-            var attributes = AttributeResolver.collectFrom(pipeline.build());
-            var condition = Conditions.from(select.getWhere(), schema, nodeIdCounter).get();
-            var qualifiedCondition = AttributeResolver.qualifyCondition(condition, attributes);
-            pipeline = pipeline.filter(qualifiedCondition, attributes);
-        }
+        pipeline = pipeline.filter(Conditions.from(select.getWhere(), schema, nodeIdCounter));
 
         boolean hasAggregates = hasAggregatesInSelect(select);
         boolean hasGroupBy = select.getGroupBy() != null;
@@ -46,12 +38,7 @@ public class IRBuilder {
             pipeline = addGroupBy(select, pipeline);
         }
 
-        if (select.getHaving() != null) {
-            var attributes = AttributeResolver.collectFrom(pipeline.build());
-            var condition = Conditions.from(select.getHaving(), schema, nodeIdCounter).get();
-            var qualifiedCondition = AttributeResolver.qualifyCondition(condition, attributes);
-            pipeline = pipeline.aggFilter(qualifiedCondition, attributes);
-        }
+        pipeline = pipeline.aggFilter(Conditions.from(select.getHaving(), schema, nodeIdCounter));
 
         if (hasGroupBy || hasAggregates) {
             pipeline = buildReturnForGroupBy(select, pipeline);
@@ -60,8 +47,7 @@ public class IRBuilder {
         }
 
         if (select.getDistinct() != null) {
-            var attributes = AttributeResolver.collectFrom(pipeline.build());
-            pipeline = pipeline.duplElim(attributes);
+            pipeline = pipeline.duplElim();
         }
 
         return pipeline.build();
@@ -95,7 +81,7 @@ public class IRBuilder {
             return pipeline.returnAll();
         }
 
-        var availableAttrs = AttributeResolver.collectFrom(pipeline.build());
+        var availableAttrs = pipeline.attributes();
         var selectedAttrs = selectItems.stream()
             .filter(item -> !(item.getExpression() instanceof AllColumns))
             .map(item -> buildAttributeRef(item, availableAttrs))
@@ -121,7 +107,7 @@ public class IRBuilder {
 
     private IRPipeline buildReturnForGroupBy(PlainSelect select, IRPipeline pipeline) {
         var selectItems = select.getSelectItems();
-        var availableAttrs = AttributeResolver.collectFrom(pipeline.build());
+        var availableAttrs = pipeline.attributes();
 
         if (selectItems.size() == 1 && selectItems.getFirst().getExpression() instanceof AllColumns) {
             return pipeline.returnAll();
@@ -165,7 +151,7 @@ public class IRBuilder {
     }
 
     private IRPipeline addGroupBy(PlainSelect select, IRPipeline pipeline) {
-        var availableAttrs = AttributeResolver.collectFrom(pipeline.build());
+        var availableAttrs = pipeline.attributes();
 
         List<String> groupingAttributes;
         if (select.getGroupBy() != null) {
@@ -206,13 +192,7 @@ public class IRBuilder {
             }
         }
 
-        var outputAttributes = new ArrayList<String>();
-        outputAttributes.addAll(groupingAttributes);
-        outputAttributes.addAll(aggregates.stream()
-            .map(IRExpression.Aggregate::alias)
-            .toList());
-
-        return pipeline.group(groupingAttributes, aggregates, outputAttributes);
+        return pipeline.group(groupingAttributes, aggregates);
     }
 
     private IRExpression qualifyAggregateArgument(

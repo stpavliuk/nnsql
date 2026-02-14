@@ -6,9 +6,9 @@ import nnsql.query.ir.Return.AttributeRef;
 
 import java.util.List;
 
-public class AttributeResolver {
+class AttributeResolver {
 
-    public static Condition qualifyCondition(Condition condition, List<String> availableAttrs) {
+    static Condition qualifyCondition(Condition condition, List<String> availableAttrs) {
         return switch (condition) {
             case Comparison(var left, var right, var op) ->
                 Condition.compare(
@@ -46,14 +46,14 @@ public class AttributeResolver {
         };
     }
 
-    public static List<String> collectFromProduct(Product product) {
+    static List<String> collectFromProduct(Product product) {
         return product.relations().stream()
             .flatMap(rel -> rel.attributes().stream()
                 .map(attr -> rel.alias() + "_" + attr))
             .toList();
     }
 
-    public static List<String> collectFrom(IRNode node) {
+    static List<String> collectFrom(IRNode node) {
         return switch (node) {
             case Return ret when !ret.selectStar() ->
                 ret.selectedAttributes().stream().map(AttributeRef::alias).toList();
@@ -66,7 +66,7 @@ public class AttributeResolver {
         };
     }
 
-    public static String resolve(String attrName, List<String> availableAttrs) {
+    static String resolve(String attrName, List<String> availableAttrs) {
         if (availableAttrs.contains(attrName)) {
             return attrName;
         }
