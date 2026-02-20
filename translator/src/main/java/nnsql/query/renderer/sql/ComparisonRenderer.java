@@ -32,7 +32,10 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
                 renderWithLiteral(lit, comp.right(), comp.operator(), rel, negate, ctx);
 
             case IRExpression.BinaryOp binOp ->
-                renderWithBinaryOp(binOp, comp.right(), comp.operator(), rel, negate);
+                renderWithComputedExpr(binOp, comp.right(), comp.operator(), rel, negate);
+
+            case IRExpression.Cast cast ->
+                renderWithComputedExpr(cast, comp.right(), comp.operator(), rel, negate);
 
             case IRExpression.ScalarSubquery _ ->
                 throw unsupported("Scalar subquery on left side of comparison");
@@ -42,11 +45,11 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         };
     }
 
-    private Expression renderWithBinaryOp(IRExpression.BinaryOp binOp, IRExpression right, String op,
-                                           String rel, boolean negate) {
-        var allCols = ExpressionSqlRenderer.collectColumns(binOp, right);
+    private Expression renderWithComputedExpr(IRExpression leftExpr, IRExpression right, String op,
+                                              String rel, boolean negate) {
+        var allCols = ExpressionSqlRenderer.collectColumns(leftExpr, right);
 
-        return existsExprToExpr(rel, binOp, right, op, allCols, negate);
+        return existsExprToExpr(rel, leftExpr, right, op, allCols, negate);
     }
 
     private Expression renderWithColumn(String col, IRExpression right, String op, String rel,
@@ -65,6 +68,12 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
                 var leftExpr = new IRExpression.ColumnRef(col);
                 var allCols = ExpressionSqlRenderer.collectColumns(leftExpr, binOp);
                 yield existsExprToExpr(rel, leftExpr, binOp, op, allCols, negate);
+            }
+
+            case IRExpression.Cast cast -> {
+                var leftExpr = new IRExpression.ColumnRef(col);
+                var allCols = ExpressionSqlRenderer.collectColumns(leftExpr, cast);
+                yield existsExprToExpr(rel, leftExpr, cast, op, allCols, negate);
             }
 
             case IRExpression.Aggregate _ ->
@@ -91,6 +100,11 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.BinaryOp binOp -> {
                 var rightCols = ExpressionSqlRenderer.collectColumns(binOp);
                 yield existsExprToExpr(rel, lit, binOp, op, rightCols, negate);
+            }
+
+            case IRExpression.Cast cast -> {
+                var rightCols = ExpressionSqlRenderer.collectColumns(cast);
+                yield existsExprToExpr(rel, lit, cast, op, rightCols, negate);
             }
 
             case IRExpression.Aggregate _ ->

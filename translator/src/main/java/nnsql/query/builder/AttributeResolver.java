@@ -45,6 +45,8 @@ public class AttributeResolver {
                     qualifyExpression(left, availableAttrs),
                     op,
                     qualifyExpression(right, availableAttrs));
+            case IRExpression.Cast(var inner, var targetType) ->
+                new IRExpression.Cast(qualifyExpression(inner, availableAttrs), targetType);
             case IRExpression.Literal _,
                  IRExpression.Aggregate _,
                  IRExpression.ScalarSubquery _ -> expr;

@@ -1,6 +1,7 @@
 package nnsql.query.renderer.sql;
 
 import net.sf.jsqlparser.expression.Expression;
+import net.sf.jsqlparser.expression.CastExpression;
 
 import nnsql.query.ir.IRExpression;
 
@@ -23,6 +24,7 @@ final class ExpressionSqlRenderer {
             case IRExpression.BinaryOp(var left, _, var right) ->
                 Stream.concat(collectColumns(left).stream(), collectColumns(right).stream())
                     .distinct().toList();
+            case IRExpression.Cast(var inner, _) -> collectColumns(inner);
             case IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->
                 throw new UnsupportedOperationException("Unsupported expression in column collection");
         };
@@ -41,6 +43,8 @@ final class ExpressionSqlRenderer {
             case IRExpression.Literal lit -> literal(lit);
             case IRExpression.BinaryOp(var left, var op, var right) ->
                 arithmetic(toSqlExpr(left, baseName), op, toSqlExpr(right, baseName));
+            case IRExpression.Cast(var inner, var targetType) ->
+                new CastExpression("CAST", toSqlExpr(inner, baseName), targetType);
             case IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->
                 throw new UnsupportedOperationException("Unsupported expression in SQL rendering");
         };

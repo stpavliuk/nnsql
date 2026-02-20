@@ -153,6 +153,11 @@ public class IRBuilder {
                 toExpression(mul.getLeftExpression()), "*", toExpression(mul.getRightExpression()));
             case Division div -> new IRExpression.BinaryOp(
                 toExpression(div.getLeftExpression()), "/", toExpression(div.getRightExpression()));
+            case CastExpression cast ->
+                new IRExpression.Cast(
+                    toExpression(cast.getLeftExpression()),
+                    cast.getColDataType().toString()
+                );
             default -> throw new UnsupportedOperationException(
                 "Unsupported expression: " + expr.getClass().getSimpleName());
         };
@@ -306,9 +311,9 @@ public class IRBuilder {
                 var alias = item.getAlias() != null ? item.getAlias().getName() : colName;
                 yield AttributeRef.attr(resolvedName, alias);
             }
-            case IRExpression.BinaryOp _ -> {
+            case IRExpression.BinaryOp _, IRExpression.Cast _ -> {
                 if (item.getAlias() == null) {
-                    throw new IllegalArgumentException("Arithmetic expressions require an alias");
+                    throw new IllegalArgumentException("Computed expressions require an alias");
                 }
                 var qualifiedExpr = AttributeResolver.qualifyExpression(irExpr, availableAttrs);
                 yield AttributeRef.expr(qualifiedExpr, item.getAlias().getName());
@@ -354,9 +359,9 @@ public class IRBuilder {
                             : colName;
                         selectedAttrs.add(AttributeRef.attr(resolvedName, alias));
                     }
-                    case IRExpression.BinaryOp _ -> {
+                    case IRExpression.BinaryOp _, IRExpression.Cast _ -> {
                         if (selectItem.getAlias() == null) {
-                            throw new IllegalArgumentException("Arithmetic expressions require an alias");
+                            throw new IllegalArgumentException("Computed expressions require an alias");
                         }
                         var qualifiedExpr = AttributeResolver.qualifyExpression(irExpr, availableAttrs);
                         selectedAttrs.add(AttributeRef.expr(qualifiedExpr, selectItem.getAlias().getName()));
@@ -444,6 +449,11 @@ public class IRBuilder {
                     qualifyAggregateArgument(left, availableAttrs),
                     op,
                     qualifyAggregateArgument(right, availableAttrs));
+            case IRExpression.Cast(var inner, var targetType) ->
+                new IRExpression.Cast(
+                    qualifyAggregateArgument(inner, availableAttrs),
+                    targetType
+                );
         };
     }
 }

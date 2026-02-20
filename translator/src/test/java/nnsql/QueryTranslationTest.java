@@ -656,6 +656,27 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testCastExpressions() {
+        var selectCastSql = normalizeWhitespace(translator.translate(
+            "SELECT CAST(R.A AS INTEGER) AS a_int FROM R"
+        ));
+        assertTrue(selectCastSql.contains("return_1_attr_a_int"));
+        assertTrue(selectCastSql.contains("CAST(product_0_R_A.v AS INTEGER) AS v"));
+
+        var whereCastSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE CAST(R.B AS DECIMAL(15,2)) > 100.50"
+        ));
+        assertTrue(whereCastSql.contains("CAST(product_0_R_B.v AS DECIMAL"));
+        assertTrue(whereCastSql.contains("> 100.5"));
+
+        var combinedCastSql = normalizeWhitespace(translator.translate(
+            "SELECT CAST(R.A + R.B AS DECIMAL(10,2)) AS total FROM R"
+        ));
+        assertTrue(combinedCastSql.contains("return_1_attr_total"));
+        assertTrue(combinedCastSql.contains("CAST(product_0_R_A.v + product_0_R_B.v AS DECIMAL"));
+    }
+
+    @Test
     void testArithmeticInAggregates() {
         var sumMulSql = normalizeWhitespace(translator.translate(
             "SELECT SUM(R.A * R.B) AS revenue FROM R"

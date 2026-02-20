@@ -85,6 +85,13 @@ public sealed interface IRExpression {
         }
     }
 
+    record Cast(IRExpression expr, String targetType) implements IRExpression {
+        @Override
+        public String toString() {
+            return "CAST(%s AS %s)".formatted(expr, targetType);
+        }
+    }
+
     static BinaryOp add(IRExpression left, IRExpression right) {
         return new BinaryOp(left, "+", right);
     }
