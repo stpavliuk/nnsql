@@ -3,3 +3,4 @@ plugins {
 }
 
 rootProject.name = 'nnsql-translator'
+include 'translator', 'tpcds-tests'
