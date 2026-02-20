@@ -22,18 +22,38 @@ public record Return(IRNode input, List<AttributeRef> selectedAttributes, boolea
         return "RETURN(%s)".formatted(attrs);
     }
 
-    public record AttributeRef(String sourceName, String alias) {
-        public AttributeRef(String sourceName, String alias) {
-            this.sourceName = sourceName;
-            this.alias = alias != null ? alias : sourceName;
+    public record AttributeRef(IRExpression source, String alias) {
+        public AttributeRef(IRExpression source, String alias) {
+            this.source = source;
+            this.alias = alias != null ? alias : deriveAlias(source);
+        }
+
+        private static String deriveAlias(IRExpression source) {
+            return switch (source) {
+                case IRExpression.ColumnRef(var col) -> col;
+                case IRExpression.Aggregate(_, _, var aggAlias) -> aggAlias;
+                default -> throw new IllegalArgumentException("Expression requires an alias");
+            };
         }
 
         public static AttributeRef attr(String sourceName, String alias) {
-            return new AttributeRef(sourceName, alias);
+            return new AttributeRef(new IRExpression.ColumnRef(sourceName), alias);
         }
 
         public static AttributeRef attr(String sourceName) {
-            return new AttributeRef(sourceName, sourceName);
+            return attr(sourceName, sourceName);
+        }
+
+        public static AttributeRef expr(IRExpression source, String alias) {
+            return new AttributeRef(source, alias);
+        }
+
+        public boolean isSimpleColumn() {
+            return source instanceof IRExpression.ColumnRef;
+        }
+
+        public String sourceColumnName() {
+            return source instanceof IRExpression.ColumnRef(var col) ? col : null;
         }
     }
 }

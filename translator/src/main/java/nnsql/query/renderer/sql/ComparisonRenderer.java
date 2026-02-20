@@ -7,6 +7,7 @@ import net.sf.jsqlparser.statement.select.*;
 import nnsql.query.ir.*;
 import nnsql.query.renderer.RenderContext;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.BiFunction;
 
@@ -30,12 +31,22 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.Literal lit ->
                 renderWithLiteral(lit, comp.right(), comp.operator(), rel, negate, ctx);
 
+            case IRExpression.BinaryOp binOp ->
+                renderWithBinaryOp(binOp, comp.right(), comp.operator(), rel, negate);
+
             case IRExpression.ScalarSubquery _ ->
                 throw unsupported("Scalar subquery on left side of comparison");
 
             case IRExpression.Aggregate _ ->
                 throw unsupported(comp.left().getClass().getSimpleName());
         };
+    }
+
+    private Expression renderWithBinaryOp(IRExpression.BinaryOp binOp, IRExpression right, String op,
+                                           String rel, boolean negate) {
+        var allCols = ExpressionSqlRenderer.collectColumns(binOp, right);
+
+        return existsExprToExpr(rel, binOp, right, op, allCols, negate);
     }
 
     private Expression renderWithColumn(String col, IRExpression right, String op, String rel,
@@ -49,6 +60,12 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
 
             case IRExpression.ScalarSubquery subq ->
                 existsColumnToSubquery(rel, col, op, renderSubquery(subq, ctx), negate);
+
+            case IRExpression.BinaryOp binOp -> {
+                var leftExpr = new IRExpression.ColumnRef(col);
+                var allCols = ExpressionSqlRenderer.collectColumns(leftExpr, binOp);
+                yield existsExprToExpr(rel, leftExpr, binOp, op, allCols, negate);
+            }
 
             case IRExpression.Aggregate _ ->
                 throw unsupported(right.getClass().getSimpleName());
@@ -71,9 +88,59 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
                 yield comparison(literal(lit), op, sub);
             }
 
+            case IRExpression.BinaryOp binOp -> {
+                var rightCols = ExpressionSqlRenderer.collectColumns(binOp);
+                yield existsExprToExpr(rel, lit, binOp, op, rightCols, negate);
+            }
+
             case IRExpression.Aggregate _ ->
                 throw unsupported(right.getClass().getSimpleName());
         };
+    }
+
+    private Expression existsExprToExpr(String rel, IRExpression left, IRExpression right,
+                                         String op, List<String> columns, boolean negate) {
+        Table idTbl = table(idTable(rel));
+
+        Expression comp = comparison(
+            ExpressionSqlRenderer.toSqlExpr(left, rel),
+            op,
+            ExpressionSqlRenderer.toSqlExpr(right, rel)
+        );
+        if (negate) comp = not(paren(comp));
+
+        if (columns.isEmpty()) {
+            return comp;
+        }
+
+        var ps = new PlainSelect();
+        ps.addSelectItem(new AllColumns());
+
+        var firstCol = columns.getFirst();
+        Table firstTable = table(attrTable(rel, firstCol));
+        ps.setFromItem(firstTable);
+
+        var joins = new ArrayList<Join>();
+        var conditions = new ArrayList<Expression>();
+        conditions.add(new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+            column(firstTable, "id"), column(idTbl, "id")));
+
+        for (int i = 1; i < columns.size(); i++) {
+            var col = columns.get(i);
+            Table attrTbl = table(attrTable(rel, col));
+            joins.add(simpleJoin(attrTbl));
+            conditions.add(new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                column(attrTbl, "id"), column(idTbl, "id")));
+        }
+
+        if (!joins.isEmpty()) {
+            ps.setJoins(joins);
+        }
+
+        conditions.add(comp);
+        ps.setWhere(andAll(conditions));
+
+        return exists(ps);
     }
 
     private Expression existsColumnToColumn(String rel, String leftCol, String rightCol,
@@ -194,7 +261,7 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case AggFilter af -> findReturnNode(af.input());
             case Group g -> findReturnNode(g.input());
             case Filter f -> findReturnNode(f.input());
-            case Product p -> null;
+            case Product _ -> null;
         };
     }
 

@@ -1,10 +1,13 @@
 package nnsql.query.renderer.sql;
 
-import net.sf.jsqlparser.statement.select.PlainSelect;
+import net.sf.jsqlparser.expression.*;
+import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.statement.select.*;
 
 import nnsql.query.ir.Return;
 import nnsql.query.renderer.RenderContext;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static nnsql.query.renderer.sql.Sql.*;
@@ -30,12 +33,47 @@ class ReturnRenderer {
     private void addAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
                                    List<Return.AttributeRef> selectedAttributes) {
         selectedAttributes.forEach(attr -> {
-            var ps = new PlainSelect();
-            ps.addSelectItem(column("id"));
-            ps.addSelectItem(column("v"));
-            ps.setFromItem(table(attrTable(inputBaseName, attr.sourceName())));
-
-            ctx.addCTE(attrCTE(baseName, attr.alias()), ps.toString());
+            if (attr.isSimpleColumn()) {
+                addSimpleColumnCTE(ctx, baseName, inputBaseName, attr);
+            } else {
+                addComputedExpressionCTE(ctx, baseName, inputBaseName, attr);
+            }
         });
+    }
+
+    private void addSimpleColumnCTE(RenderContext ctx, String baseName, String inputBaseName,
+                                     Return.AttributeRef attr) {
+        var ps = new PlainSelect();
+        ps.addSelectItem(column("id"));
+        ps.addSelectItem(column("v"));
+        ps.setFromItem(table(attrTable(inputBaseName, attr.sourceColumnName())));
+
+        ctx.addCTE(attrCTE(baseName, attr.alias()), ps.toString());
+    }
+
+    private void addComputedExpressionCTE(RenderContext ctx, String baseName, String inputBaseName,
+                                           Return.AttributeRef attr) {
+        var columns = ExpressionSqlRenderer.collectColumns(attr.source());
+        if (columns.isEmpty()) {
+            throw new IllegalStateException("Computed expression must reference at least one column");
+        }
+
+        var idTbl = table(idTable(inputBaseName));
+        var ps = new PlainSelect();
+        ps.addSelectItem(column(idTbl, "id"));
+
+        var exprSql = ExpressionSqlRenderer.toSqlExpr(attr.source(), inputBaseName);
+        ps.addSelectItem(exprSql, new Alias("v", true));
+
+        ps.setFromItem(idTbl);
+
+        var joins = new ArrayList<Join>();
+        for (var col : columns) {
+            var attrTbl = table(attrTable(inputBaseName, col));
+            joins.add(join(attrTbl, new EqualsTo(column(attrTbl, "id"), column(idTbl, "id"))));
+        }
+        ps.setJoins(joins);
+
+        ctx.addCTE(attrCTE(baseName, attr.alias()), ps.toString());
     }
 }

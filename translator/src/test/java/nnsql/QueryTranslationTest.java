@@ -623,6 +623,82 @@ class QueryTranslationTest {
         );
     }
 
+    @Test
+    void testArithmeticExpressions() {
+        var addSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A + R.B AS total FROM R"
+        ));
+        assertTrue(addSql.contains("return_1_attr_total"));
+        assertTrue(addSql.contains("product_0_R_A.v + product_0_R_B.v"));
+
+        var mulWhereSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.B * 2 > 100"
+        ));
+        assertTrue(mulWhereSql.contains("product_0_R_B.v * 2.0 > 100.0"));
+
+        var compoundSql = normalizeWhitespace(translator.translate(
+            "SELECT (R.A + R.B) * 2 AS computed FROM R"
+        ));
+        assertTrue(compoundSql.contains("return_1_attr_computed"));
+        assertTrue(compoundSql.contains("product_0_R_A.v + product_0_R_B.v"));
+        assertTrue(compoundSql.contains("* 2.0"));
+
+        var divWhereSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.A / 10 < R.B"
+        ));
+        assertTrue(divWhereSql.contains("product_0_R_A.v / 10.0 < product_0_R_B.v"));
+
+        var subSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A - R.B AS diff FROM R"
+        ));
+
+        assertTrue(subSql.contains("product_0_R_A.v - product_0_R_B.v"));
+    }
+
+    @Test
+    void testArithmeticInAggregates() {
+        var sumMulSql = normalizeWhitespace(translator.translate(
+            "SELECT SUM(R.A * R.B) AS revenue FROM R"
+        ));
+        assertTrue(sumMulSql.contains("SUM(product_0_R_A.v * product_0_R_B.v)"));
+        assertTrue(sumMulSql.contains("group_1_revenue"));
+    }
+
+    @Test
+    void testArithmeticConstantPredicate() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE 1 + 2 > 2"
+        ));
+        assertTrue(sql.contains("SELECT product_0_id.id FROM product_0_id WHERE 1.0 + 2.0 > 2.0"));
+        assertFalse(sql.contains("EXISTS (SELECT * FROM product_0_id"));
+    }
+
+    @Test
+    void testArithmeticExpressionInGroupByReturn() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A + R.B AS total, SUM(R.B) AS sum_b FROM R GROUP BY R.A, R.B"
+        ));
+        assertTrue(sql.contains("return_2_attr_total"));
+        assertTrue(sql.contains("group_1_R_A.v + group_1_R_B.v"));
+        assertTrue(sql.contains("return_2_attr_sum_b"));
+    }
+
+    @Test
+    void testCountWithArithmeticExpression() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT COUNT(R.A + R.B) AS cnt FROM R"
+        ));
+        assertTrue(sql.contains("COUNT(product_0_R_A.v + product_0_R_B.v)"));
+    }
+
+    @Test
+    void testArithmeticInHavingWithAggregateAlias() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A, SUM(R.B) AS sum_b FROM R GROUP BY R.A HAVING sum_b * 2 > 10"
+        ));
+        assertTrue(sql.contains("group_1_sum_b.v * 2.0 > 10.0"));
+    }
+
     private void assertQueryTranslation(String inputQuery, String expectedOutput) {
         String actualOutput = translator.translate(inputQuery);
         assertEquals(normalizeWhitespace(expectedOutput), normalizeWhitespace(actualOutput));

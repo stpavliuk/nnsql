@@ -9,6 +9,7 @@ import nnsql.query.ir.IRExpression;
 import nnsql.query.ir.Group;
 import nnsql.query.renderer.RenderContext;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static nnsql.query.renderer.sql.Sql.*;
@@ -97,18 +98,13 @@ class GroupRenderer {
             var argument = aggregate.argument();
             var alias = aggregate.alias();
 
-            String columnName = switch (argument) {
-                case IRExpression.ColumnRef(var col) -> col;
-                default ->
-                    throw new UnsupportedOperationException("Aggregate arguments other than column references are not" +
-                                                            " yet supported");
-            };
+            var columns = ExpressionSqlRenderer.collectColumns(argument);
 
             String definition;
             if (functionName.equals("COUNT")) {
-                definition = renderCountAggregate(baseName, inputBaseName, columnName, groupingAttrs);
+                definition = renderCountAggregate(baseName, inputBaseName, argument, columns, groupingAttrs);
             } else {
-                definition = buildAggregateSelect(baseName, inputBaseName, columnName, functionName, groupingAttrs)
+                definition = buildAggregateSelect(baseName, inputBaseName, argument, columns, functionName, groupingAttrs)
                     .toString();
             }
 
@@ -116,19 +112,34 @@ class GroupRenderer {
         }
     }
 
-    private PlainSelect buildAggregateSelect(String baseName, String inputBaseName, String columnName,
-                                              String functionName, List<String> groupingAttrs) {
+    private PlainSelect buildAggregateSelect(String baseName, String inputBaseName, IRExpression argument,
+                                              List<String> columns, String functionName,
+                                              List<String> groupingAttrs) {
         var baseIdTbl = table(idTable(baseName));
         var inputIdTbl = tableAlias(idTable(inputBaseName), "input_id");
-        var attrTbl = table(attrTable(inputBaseName, columnName));
 
         var ps = new PlainSelect();
         ps.addSelectItem(column(baseIdTbl, "id"));
-        ps.addSelectItem(fn(functionName, column(attrTbl, "v")), new Alias("v", true));
+        ps.addSelectItem(
+            fn(functionName, ExpressionSqlRenderer.toSqlExpr(argument, inputBaseName)),
+            new Alias("v", true)
+        );
         ps.setFromItem(baseIdTbl);
-        ps.addJoins(simpleJoin(inputIdTbl), simpleJoin(attrTbl));
 
-        Expression where = new EqualsTo(column(attrTbl, "id"), column("input_id", "id"));
+        var joins = new ArrayList<Join>();
+        joins.add(simpleJoin(inputIdTbl));
+
+        var conditions = new ArrayList<Expression>();
+        for (var col : columns) {
+            var attrTbl = table(attrTable(inputBaseName, col));
+            joins.add(simpleJoin(attrTbl));
+            conditions.add(new EqualsTo(column(attrTbl, "id"), column("input_id", "id")));
+        }
+        ps.setJoins(joins);
+
+        Expression where = conditions.isEmpty()
+            ? new BooleanValue(true)
+            : andAll(conditions);
 
         if (!groupingAttrs.isEmpty()) {
             var equalityConditions = groupingAttrs.stream()
@@ -160,29 +171,41 @@ class GroupRenderer {
         return exists(ps);
     }
 
-    private String renderCountAggregate(String baseName, String inputBaseName, String columnName,
-                                         List<String> groupingAttrs) {
-        var countSelect = buildAggregateSelect(baseName, inputBaseName, columnName, "COUNT", groupingAttrs);
+    private String renderCountAggregate(String baseName, String inputBaseName, IRExpression argument,
+                                         List<String> columns, List<String> groupingAttrs) {
+        var countSelect = buildAggregateSelect(baseName, inputBaseName, argument, columns, "COUNT", groupingAttrs);
 
         var baseIdTbl = table(idTable(baseName));
         var inputIdTbl = tableAlias(idTable(inputBaseName), "input_id");
-        var attrTbl = table(attrTable(inputBaseName, columnName));
 
-        Expression subWhere = new EqualsTo(column(attrTbl, "id"), column("input_id", "id"));
+        var joins = new ArrayList<Join>();
+        var conditions = new ArrayList<Expression>();
+
+        for (var col : columns) {
+            var attrTbl = table(attrTable(inputBaseName, col));
+            joins.add(simpleJoin(attrTbl));
+            conditions.add(new EqualsTo(column(attrTbl, "id"), column("input_id", "id")));
+        }
+
+        Expression subWhere = conditions.isEmpty()
+            ? new BooleanValue(true)
+            : andAll(conditions);
 
         if (!groupingAttrs.isEmpty()) {
             var equalityConditions = groupingAttrs.stream()
                 .map(attr -> (Expression) aggEqualityExists(inputBaseName, attr, baseName))
                 .toList();
             subWhere = and(subWhere, andAll(equalityConditions));
-        } else {
+        } else if (!conditions.isEmpty()) {
             subWhere = and(subWhere, new BooleanValue(true));
         }
 
         var subquery = new PlainSelect();
         subquery.addSelectItem(new AllColumns());
         subquery.setFromItem(inputIdTbl);
-        subquery.addJoins(simpleJoin(attrTbl));
+        if (!joins.isEmpty()) {
+            subquery.setJoins(joins);
+        }
         subquery.setWhere(subWhere);
 
         var zeroPart = new PlainSelect();

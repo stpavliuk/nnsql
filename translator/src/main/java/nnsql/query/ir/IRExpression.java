@@ -70,4 +70,34 @@ public sealed interface IRExpression {
             return "(SUBQUERY)";
         }
     }
+
+    record BinaryOp(IRExpression left, String operator, IRExpression right) implements IRExpression {
+        public BinaryOp {
+            var validOps = java.util.Set.of("+", "-", "*", "/");
+            if (!validOps.contains(operator)) {
+                throw new IllegalArgumentException("Unknown arithmetic operator: " + operator);
+            }
+        }
+
+        @Override
+        public String toString() {
+            return "(%s %s %s)".formatted(left, operator, right);
+        }
+    }
+
+    static BinaryOp add(IRExpression left, IRExpression right) {
+        return new BinaryOp(left, "+", right);
+    }
+
+    static BinaryOp subtract(IRExpression left, IRExpression right) {
+        return new BinaryOp(left, "-", right);
+    }
+
+    static BinaryOp multiply(IRExpression left, IRExpression right) {
+        return new BinaryOp(left, "*", right);
+    }
+
+    static BinaryOp divide(IRExpression left, IRExpression right) {
+        return new BinaryOp(left, "/", right);
+    }
 }

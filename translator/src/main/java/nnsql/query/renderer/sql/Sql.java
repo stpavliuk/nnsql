@@ -1,7 +1,7 @@
 package nnsql.query.renderer.sql;
 
 import net.sf.jsqlparser.expression.*;
-import net.sf.jsqlparser.expression.operators.arithmetic.Concat;
+import net.sf.jsqlparser.expression.operators.arithmetic.*;
 import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
 import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
 import net.sf.jsqlparser.expression.operators.relational.*;
@@ -105,6 +105,16 @@ final class Sql {
             result = new Concat(new Concat(result, new StringValue(sep)), exprs.get(i));
         }
         return result;
+    }
+
+    static Expression arithmetic(Expression left, String op, Expression right) {
+        return switch (op) {
+            case "+" -> new Addition().withLeftExpression(left).withRightExpression(right);
+            case "-" -> new Subtraction().withLeftExpression(left).withRightExpression(right);
+            case "*" -> new Multiplication().withLeftExpression(left).withRightExpression(right);
+            case "/" -> new Division().withLeftExpression(left).withRightExpression(right);
+            default -> throw new IllegalArgumentException("Unknown operator: " + op);
+        };
     }
 
     static Expression literal(IRExpression.Literal lit) {

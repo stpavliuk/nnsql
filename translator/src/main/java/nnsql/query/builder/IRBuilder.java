@@ -1,6 +1,7 @@
 package nnsql.query.builder;
 
 import net.sf.jsqlparser.expression.*;
+import net.sf.jsqlparser.expression.operators.arithmetic.*;
 import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
 import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
 import net.sf.jsqlparser.expression.operators.relational.*;
@@ -144,6 +145,14 @@ public class IRBuilder {
             case Function fn when isAggregate(fn) -> toAggregate(fn, null);
             case ParenthesedExpressionList<?> p -> toExpression(p.getFirst());
             case ParenthesedSelect ps -> toScalarSubquery(ps);
+            case Addition add -> new IRExpression.BinaryOp(
+                toExpression(add.getLeftExpression()), "+", toExpression(add.getRightExpression()));
+            case Subtraction sub -> new IRExpression.BinaryOp(
+                toExpression(sub.getLeftExpression()), "-", toExpression(sub.getRightExpression()));
+            case Multiplication mul -> new IRExpression.BinaryOp(
+                toExpression(mul.getLeftExpression()), "*", toExpression(mul.getRightExpression()));
+            case Division div -> new IRExpression.BinaryOp(
+                toExpression(div.getLeftExpression()), "/", toExpression(div.getRightExpression()));
             default -> throw new UnsupportedOperationException(
                 "Unsupported expression: " + expr.getClass().getSimpleName());
         };
@@ -272,18 +281,6 @@ public class IRBuilder {
         return false;
     }
 
-    private String extractAttributeName(SelectItem<?> item) {
-        var expr = item.getExpression();
-        return switch (toExpression(expr)) {
-            case IRExpression.ColumnRef col -> col.columnName();
-            case IRExpression.Literal _ ->
-                throw new IllegalArgumentException("Cannot use literal in SELECT without alias");
-            case IRExpression.Aggregate agg -> agg.alias();
-            case IRExpression.ScalarSubquery _ ->
-                throw new IllegalArgumentException("Cannot use scalar subquery in SELECT without alias");
-        };
-    }
-
     private IRPipeline buildReturnForNonGroupBy(PlainSelect select, IRPipeline pipeline) {
         var selectItems = select.getSelectItems();
 
@@ -301,18 +298,30 @@ public class IRBuilder {
     }
 
     private AttributeRef buildAttributeRef(SelectItem<?> item, List<String> availableAttrs) {
-        var attrName = extractAttributeName(item);
+        var irExpr = toExpression(item.getExpression());
 
-        if (attrName == null) {
-            throw new IllegalArgumentException(
-                "Aggregate functions require an alias. Use: " + item.getExpression() + " AS alias_name"
-            );
-        }
-
-        var resolvedAttrName = AttributeResolver.resolve(attrName, availableAttrs);
-        var alias = item.getAlias() != null ? item.getAlias().getName() : attrName;
-
-        return new AttributeRef(resolvedAttrName, alias);
+        return switch (irExpr) {
+            case IRExpression.ColumnRef(var colName) -> {
+                var resolvedName = AttributeResolver.resolve(colName, availableAttrs);
+                var alias = item.getAlias() != null ? item.getAlias().getName() : colName;
+                yield AttributeRef.attr(resolvedName, alias);
+            }
+            case IRExpression.BinaryOp _ -> {
+                if (item.getAlias() == null) {
+                    throw new IllegalArgumentException("Arithmetic expressions require an alias");
+                }
+                var qualifiedExpr = AttributeResolver.qualifyExpression(irExpr, availableAttrs);
+                yield AttributeRef.expr(qualifiedExpr, item.getAlias().getName());
+            }
+            case IRExpression.Aggregate agg -> {
+                var alias = item.getAlias() != null ? item.getAlias().getName() : agg.alias();
+                yield AttributeRef.attr(alias, alias);
+            }
+            case IRExpression.Literal _ ->
+                throw new IllegalArgumentException("Cannot use literal in SELECT without alias");
+            case IRExpression.ScalarSubquery _ ->
+                throw new IllegalArgumentException("Cannot use scalar subquery in SELECT without alias");
+        };
     }
 
     private IRPipeline buildReturnForGroupBy(PlainSelect select, IRPipeline pipeline) {
@@ -330,23 +339,33 @@ public class IRBuilder {
 
             if (expr instanceof AllColumns) continue;
 
-            String alias;
-            String resolvedAttrName;
-
             if (expr instanceof Function fn && isAggregate(fn)) {
-                alias = selectItem.getAlias() != null
+                var alias = selectItem.getAlias() != null
                     ? selectItem.getAlias().getName()
                     : generateDefaultAggregateAlias(fn);
-                resolvedAttrName = alias;
+                selectedAttrs.add(AttributeRef.attr(alias, alias));
             } else {
-                var attrName = extractAttributeName(selectItem);
-                resolvedAttrName = AttributeResolver.resolve(attrName, availableAttrs);
-                alias = selectItem.getAlias() != null
-                    ? selectItem.getAlias().getName()
-                    : attrName;
+                var irExpr = toExpression(expr);
+                switch (irExpr) {
+                    case IRExpression.ColumnRef(var colName) -> {
+                        var resolvedName = AttributeResolver.resolve(colName, availableAttrs);
+                        var alias = selectItem.getAlias() != null
+                            ? selectItem.getAlias().getName()
+                            : colName;
+                        selectedAttrs.add(AttributeRef.attr(resolvedName, alias));
+                    }
+                    case IRExpression.BinaryOp _ -> {
+                        if (selectItem.getAlias() == null) {
+                            throw new IllegalArgumentException("Arithmetic expressions require an alias");
+                        }
+                        var qualifiedExpr = AttributeResolver.qualifyExpression(irExpr, availableAttrs);
+                        selectedAttrs.add(AttributeRef.expr(qualifiedExpr, selectItem.getAlias().getName()));
+                    }
+                    default -> throw new UnsupportedOperationException(
+                        "Unsupported expression in GROUP BY SELECT: " + irExpr.getClass().getSimpleName()
+                    );
+                }
             }
-
-            selectedAttrs.add(new AttributeRef(resolvedAttrName, alias));
         }
 
         return pipeline.returnSelected(selectedAttrs);
@@ -420,6 +439,11 @@ public class IRBuilder {
             case IRExpression.Literal lit -> lit;
             case IRExpression.Aggregate _,
                  IRExpression.ScalarSubquery _ -> expr;
+            case IRExpression.BinaryOp(var left, var op, var right) ->
+                new IRExpression.BinaryOp(
+                    qualifyAggregateArgument(left, availableAttrs),
+                    op,
+                    qualifyAggregateArgument(right, availableAttrs));
         };
     }
 }
