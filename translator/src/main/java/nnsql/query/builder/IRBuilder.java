@@ -211,6 +211,28 @@ public class IRBuilder {
                     ? Condition.or(Condition.lt(left, start), Condition.gt(left, end))
                     : Condition.and(Condition.gte(left, start), Condition.lte(left, end));
             }
+            case InExpression in when in.getRightExpression() instanceof ExpressionList<?> list -> {
+                if (list.isEmpty()) {
+                    throw new UnsupportedOperationException("IN with empty list is not supported");
+                }
+
+                var left = toExpression(in.getLeftExpression());
+                var values = list.stream()
+                    .map(e -> toExpression((Expression) e))
+                    .map(value -> switch (value) {
+                        case IRExpression.Literal lit -> lit;
+                        default -> throw new UnsupportedOperationException(
+                            "IN list supports literal values only"
+                        );
+                    })
+                    .toList();
+
+                yield in.isNot()
+                    ? Condition.and(values.stream().map(v -> (Condition) Condition.neq(left, v)).toList())
+                    : Condition.or(values.stream().map(v -> (Condition) Condition.eq(left, v)).toList());
+            }
+            case InExpression _ ->
+                throw new UnsupportedOperationException("IN with subquery is not supported");
             case ParenthesedExpressionList<?> p -> toCondition(p.getFirst());
             default -> throw new UnsupportedOperationException(
                 "Unsupported condition: " + expr.getClass().getSimpleName());

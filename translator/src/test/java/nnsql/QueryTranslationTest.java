@@ -12,6 +12,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class QueryTranslationTest {
     private QueryTranslator translator;
 
+    @SuppressWarnings("unused")
     @BeforeEach
     void setUp() {
         SchemaRegistry schemaRegistry = new SchemaRegistry();
@@ -335,6 +336,38 @@ class QueryTranslationTest {
                 "(EXISTS (SELECT * FROM product_0_R_A, product_0_R_B WHERE product_0_R_A.id = product_0_id.id AND product_0_R_B.id = product_0_id.id AND product_0_R_A.v >= product_0_R_B.v)) AND (EXISTS (SELECT * FROM product_0_R_A, product_0_R_B WHERE product_0_R_A.id = product_0_id.id AND product_0_R_B.id = product_0_id.id AND product_0_R_A.v <= product_0_R_B.v))"
             )
         );
+    }
+
+    @Test
+    void testInListPredicates() {
+        var inSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.B IN (1, 2, 3)"
+        ));
+        assertTrue(inSql.contains("product_0_R_B.v = 1.0"));
+        assertTrue(inSql.contains("product_0_R_B.v = 2.0"));
+        assertTrue(inSql.contains("product_0_R_B.v = 3.0"));
+        assertTrue(inSql.contains(" OR "));
+
+        var notInSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.B NOT IN (1, 2, 3)"
+        ));
+        assertTrue(notInSql.contains("product_0_R_B.v != 1.0"));
+        assertTrue(notInSql.contains("product_0_R_B.v != 2.0"));
+        assertTrue(notInSql.contains("product_0_R_B.v != 3.0"));
+        assertTrue(notInSql.contains(" AND "));
+
+        var stringInSql = normalizeWhitespace(translator.translate(
+            "SELECT customer.c_custkey FROM customer WHERE customer.c_mktsegment IN ('AUTOMOBILE', 'BUILDING')"
+        ));
+        assertTrue(stringInSql.contains("product_0_customer_c_mktsegment.v = 'AUTOMOBILE'"));
+        assertTrue(stringInSql.contains("product_0_customer_c_mktsegment.v = 'BUILDING'"));
+        assertTrue(stringInSql.contains(" OR "));
+
+        var singleValueInSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.B IN (42)"
+        ));
+        assertTrue(singleValueInSql.contains("product_0_R_B.v = 42.0"));
+        assertFalse(singleValueInSql.contains(" OR "));
     }
 
     @Test
