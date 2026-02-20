@@ -1,6 +1,6 @@
 package nnsql.query.renderer.sql;
 
-import nnsql.query.ir.Expression;
+import nnsql.query.ir.IRExpression;
 import nnsql.query.ir.Group;
 import nnsql.query.renderer.RenderContext;
 
@@ -70,7 +70,7 @@ class GroupRenderer {
             var alias = aggregate.alias();
 
             String columnName = switch (argument) {
-                case Expression.ColumnRef(var col) -> col;
+                case IRExpression.ColumnRef(var col) -> col;
                 default ->
                     throw new UnsupportedOperationException("Aggregate arguments other than column references are not" +
                                                             " yet supported");
@@ -138,7 +138,7 @@ class GroupRenderer {
         }
 
         return nonCountPart + """
-            
+
             UNION
             SELECT %s_id.id, 0 AS v
             FROM %s_id

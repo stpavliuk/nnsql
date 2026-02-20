@@ -1,35 +1,31 @@
 package nnsql.query;
 
-import nnsql.query.builder.SQLToIRBuilder;
-import nnsql.query.ir.*;
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+import nnsql.query.builder.IRBuilder;
+import nnsql.query.ir.IRNode;
 import nnsql.query.renderer.IRRenderer;
-import org.antlr.v4.runtime.CharStreams;
-import org.antlr.v4.runtime.CommonTokenStream;
-import parser.sql.sqlLexer;
-import parser.sql.sqlParser;
 
-public record QueryTranslator(SQLToIRBuilder irBuilder, IRRenderer renderer) {
-    public QueryTranslator(SchemaRegistry irBuilder, IRRenderer renderer) {
-        this(new SQLToIRBuilder(irBuilder), renderer);
+public record QueryTranslator(IRBuilder irBuilder, IRRenderer renderer) {
+    public QueryTranslator(SchemaRegistry schema, IRRenderer renderer) {
+        this(new IRBuilder(schema), renderer);
     }
 
     public String translate(String sqlQuery) {
-        var queryCtx = parseSQL(sqlQuery);
-        var selectStmt = queryCtx.selectStmt(0);
-        var ir = irBuilder.buildFromSelectStmt(selectStmt);
-        return renderer.render(ir);
+        var select = parseSelect(sqlQuery);
+        return renderer.render(irBuilder.build(select));
     }
 
     public IRNode toIR(String sqlQuery) {
-        var queryCtx = parseSQL(sqlQuery);
-        var selectStmt = queryCtx.selectStmt(0);
-        return irBuilder.buildFromSelectStmt(selectStmt);
+        var select = parseSelect(sqlQuery);
+        return irBuilder.build(select);
     }
 
-    private static sqlParser.QueryContext parseSQL(String sqlQuery) {
-        var lexer = new sqlLexer(CharStreams.fromString(sqlQuery));
-        var tokenStream = new CommonTokenStream(lexer);
-        var parser = new sqlParser(tokenStream);
-        return parser.query();
+    private static PlainSelect parseSelect(String sql) {
+        try {
+            return (PlainSelect) CCJSqlParserUtil.parse(sql);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to parse SQL: " + sql, e);
+        }
     }
 }

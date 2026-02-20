@@ -2,12 +2,12 @@ package nnsql;
 
 import nnsql.ddl.DDLTranslator;
 import nnsql.dml.DMLTranslator;
-import nnsql.duckdb.Database;
 import nnsql.query.SchemaRegistry;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.DriverManager;
 import java.util.function.Predicate;
 
 public class ImportData {
@@ -28,7 +28,7 @@ public class ImportData {
         var ddlTranslator = new DDLTranslator(schemaRegistry);
         var dmlTranslator = new DMLTranslator(schemaRegistry);
 
-        try (var conn = Database.getConnection(Path.of(DB_FILE))) {
+        try (var conn = DriverManager.getConnection("jdbc:duckdb:" + DB_FILE)) {
             var importer = new ImportData(conn);
             importer.translateExecute(schemaRegistry, SCHEMA_FILE, ddlTranslator);
             importer.translateExecute(schemaRegistry, DATA_FILE, dmlTranslator);
@@ -38,7 +38,7 @@ public class ImportData {
         }
     }
 
-    void translateExecute(SchemaRegistry schemaRegistry, String filename, Tranlator translator) {
+    void translateExecute(SchemaRegistry schemaRegistry, String filename, Translator translator) {
         try (var schemaLines = Files.lines(Path.of(filename))) {
             schemaLines
                 .map(String::trim)

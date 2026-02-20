@@ -1,64 +1,76 @@
 package nnsql.ddl;
 
-import nnsql.Tranlator;
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.statement.create.table.CreateTable;
+import net.sf.jsqlparser.statement.create.table.ColumnDefinition;
+import nnsql.Translator;
 import nnsql.query.SchemaRegistry;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
-public record DDLTranslator(SchemaRegistry schemaRegistry) implements Tranlator {
+public record DDLTranslator(SchemaRegistry schemaRegistry) implements Translator {
 
     public String translate(String ddlScript) {
-        var tableDefs = DDLParser.parse(ddlScript);
-        var statements = new ArrayList<String>();
-
-        for (var tableDef : tableDefs) {
-            statements.add(translateTable(tableDef));
+        try {
+            var statements = CCJSqlParserUtil.parseStatements(ddlScript);
+            return statements.stream()
+                .filter(CreateTable.class::isInstance)
+                .map(CreateTable.class::cast)
+                .map(this::translateTable)
+                .collect(Collectors.joining("\n\n"));
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to parse DDL: " + ddlScript, e);
         }
-
-        return String.join("\n\n", statements);
     }
 
-    private String translateTable(DDLParser.TableDef tableDef) {
+    private String translateTable(CreateTable create) {
+        var tableName = create.getTable().getName();
+        var columns = create.getColumnDefinitions();
+
+        var pkColumn = findPrimaryKeyColumn(columns);
+
+        var columnNames = columns.stream().map(ColumnDefinition::getColumnName).toList();
+        var columnTypes = columns.stream()
+            .collect(Collectors.toMap(
+                ColumnDefinition::getColumnName,
+                col -> col.getColDataType().toString()));
+
         schemaRegistry.registerTable(
-            tableDef.name(),
-            tableDef.columns().stream().map(DDLParser.ColumnDef::name).toList(),
-            tableDef.columns().stream()
-                     .collect(Collectors.toMap(DDLParser.ColumnDef::name, DDLParser.ColumnDef::dataType)),
-            tableDef.primaryKeyColumn().map(List::of).orElse(List.of())
+            tableName,
+            columnNames,
+            columnTypes,
+            pkColumn.map(List::of).orElse(List.of())
         );
 
-        var statements = new ArrayList<String>();
-        statements.add(createIdTable(tableDef));
+        var stmts = new ArrayList<String>();
+        var idType = pkColumn
+            .map(pk -> columnTypes.getOrDefault(pk, Format.VARCHAR_64))
+            .orElse(Format.VARCHAR_64);
 
-        for (var column : tableDef.columns()) {
-            statements.add(createAttributeTable(tableDef, column));
+        stmts.add(Format.idTable(tableName, idType));
+        for (var col : columns) {
+            stmts.add(Format.attributeTable(
+                tableName, col.getColumnName(), idType, col.getColDataType().toString()));
         }
 
-        return String.join(";\n", statements) + ";";
+        return String.join(";\n", stmts) + ";";
     }
 
-    private String createIdTable(DDLParser.TableDef tableDef) {
-        var idType = determineIdType(tableDef);
-        return Format.idTable(tableDef.name(), idType);
+    private Optional<String> findPrimaryKeyColumn(List<ColumnDefinition> columns) {
+        for (var col : columns) {
+            if (isPrimaryKey(col.getColumnSpecs())) {
+                return Optional.of(col.getColumnName());
+            }
+        }
+        return Optional.empty();
     }
 
-    private String createAttributeTable(DDLParser.TableDef tableDef, DDLParser.ColumnDef column) {
-        var idType = determineIdType(tableDef);
-        return Format.attributeTable(tableDef.name(), column.name(), idType, column.dataType());
-    }
-
-    private String determineIdType(DDLParser.TableDef tableDef) {
-        return tableDef
-            .primaryKeyColumn()
-            .map(pkCol -> tableDef
-                .columns()
-                .stream()
-                .filter(col -> col.name().equals(pkCol))
-                .findFirst()
-                .map(DDLParser.ColumnDef::dataType)
-                .orElse(Format.VARCHAR_64))
-            .orElse(Format.VARCHAR_64);
+    private boolean isPrimaryKey(List<String> specs) {
+        if (specs == null) return false;
+        var joined = String.join(" ", specs).toUpperCase();
+        return joined.contains("PRIMARY KEY");
     }
 }

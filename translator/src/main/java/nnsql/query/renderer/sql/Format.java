@@ -1,6 +1,6 @@
 package nnsql.query.renderer.sql;
 
-import nnsql.query.ir.Expression;
+import nnsql.query.ir.IRExpression;
 
 final class Format {
 
@@ -30,7 +30,7 @@ final class Format {
             """.formatted(ctes, finalSelect);
     }
 
-    static String literal(Expression.Literal lit) {
+    static String literal(IRExpression.Literal lit) {
         return switch (lit.type()) {
             case NUMBER -> lit.value().toString();
             case STRING -> "'" + lit.value().toString() + "'";

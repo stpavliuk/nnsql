@@ -29,7 +29,7 @@ public record IRPipeline(Option<IRNode> current, AtomicInteger nodeIdCounter) {
 
     public IRPipeline group(
         List<String> groupingAttributes,
-        List<Expression.Aggregate> aggregates,
+        List<IRExpression.Aggregate> aggregates,
         List<String> outputAttributes
     ) {
         return withCurrent(switch (current) {

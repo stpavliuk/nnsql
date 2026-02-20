@@ -1,0 +1,25 @@
+plugins {
+    id 'java'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+dependencies {
+    testImplementation project(':translator')
+
+    testImplementation 'org.duckdb:duckdb_jdbc:1.4.2.0'
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.12.1'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    if (project.hasProperty('tpcdsDbDir')) {
+        systemProperty 'nnsql.tpcds.dbDir', project.property('tpcdsDbDir')
+    }
+}
