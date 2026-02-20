@@ -22,4 +22,7 @@ tasks.named('test') {
     if (project.hasProperty('tpcdsDbDir')) {
         systemProperty 'nnsql.tpcds.dbDir', project.property('tpcdsDbDir')
     }
+    if (System.getProperty('nnsql.tpcds.queries')) {
+        systemProperty 'nnsql.tpcds.queries', System.getProperty('nnsql.tpcds.queries')
+    }
 }

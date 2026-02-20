@@ -308,6 +308,36 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testBetweenPredicates() {
+        var betweenSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.B BETWEEN 10 AND 20"
+        ));
+        assertTrue(
+            betweenSql.contains(
+                "(EXISTS (SELECT * FROM product_0_R_B WHERE product_0_R_B.id = product_0_id.id AND product_0_R_B.v >= 10.0)) AND (EXISTS (SELECT * FROM product_0_R_B WHERE product_0_R_B.id = product_0_id.id AND product_0_R_B.v <= 20.0))"
+            )
+        );
+
+        var notBetweenSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.B NOT BETWEEN 10 AND 20"
+        ));
+        assertTrue(
+            notBetweenSql.contains(
+                "(EXISTS (SELECT * FROM product_0_R_B WHERE product_0_R_B.id = product_0_id.id AND product_0_R_B.v < 10.0)) OR (EXISTS (SELECT * FROM product_0_R_B WHERE product_0_R_B.id = product_0_id.id AND product_0_R_B.v > 20.0))"
+            )
+        );
+
+        var columnBetweenSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.A BETWEEN R.B AND R.B"
+        ));
+        assertTrue(
+            columnBetweenSql.contains(
+                "(EXISTS (SELECT * FROM product_0_R_A, product_0_R_B WHERE product_0_R_A.id = product_0_id.id AND product_0_R_B.id = product_0_id.id AND product_0_R_A.v >= product_0_R_B.v)) AND (EXISTS (SELECT * FROM product_0_R_A, product_0_R_B WHERE product_0_R_A.id = product_0_id.id AND product_0_R_B.id = product_0_id.id AND product_0_R_A.v <= product_0_R_B.v))"
+            )
+        );
+    }
+
+    @Test
     void testTPCHSchema() {
         assertQueryTranslation(
             // language=sql

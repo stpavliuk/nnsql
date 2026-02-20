@@ -1,10 +1,12 @@
 package nnsql.tpcds.framework;
 
 import java.sql.*;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 
 public class TpcdsDataProvider implements BenchmarkDataProvider {
+
+    private static final String QUERIES_PROPERTY = "nnsql.tpcds.queries";
+
     private final double scaleFactor;
 
     public TpcdsDataProvider(double scaleFactor) {
@@ -22,10 +24,14 @@ public class TpcdsDataProvider implements BenchmarkDataProvider {
 
     @Override
     public List<BenchmarkQuery> queries(Connection conn) throws SQLException {
+        var filter = parseQueryFilter();
         var queries = new ArrayList<BenchmarkQuery>();
         try (var rs = conn.createStatement().executeQuery("SELECT query_nr, query FROM tpcds_queries()")) {
             while (rs.next()) {
                 var queryNr = rs.getInt("query_nr");
+                if (!filter.isEmpty() && !filter.contains(queryNr)) {
+                    continue;
+                }
                 var sql = rs.getString("query");
                 var cleaned = stripOrderByAndLimit(sql);
                 if (cleaned != null) {
@@ -34,6 +40,30 @@ public class TpcdsDataProvider implements BenchmarkDataProvider {
             }
         }
         return queries;
+    }
+
+    static Set<Integer> parseQueryFilter() {
+        var prop = System.getProperty(QUERIES_PROPERTY);
+        if (prop == null || prop.isBlank()) {
+            return Set.of();
+        }
+        var result = new HashSet<Integer>();
+        for (var part : prop.split(",")) {
+            var trimmed = part.strip();
+            if (trimmed.isEmpty()) continue;
+
+            int dashIdx = trimmed.indexOf('-');
+            if (dashIdx > 0 && dashIdx < trimmed.length() - 1) {
+                int start = Integer.parseInt(trimmed.substring(0, dashIdx).strip());
+                int end = Integer.parseInt(trimmed.substring(dashIdx + 1).strip());
+                for (int i = start; i <= end; i++) {
+                    result.add(i);
+                }
+            } else {
+                result.add(Integer.parseInt(trimmed));
+            }
+        }
+        return result;
     }
 
     static String stripOrderByAndLimit(String sql) {

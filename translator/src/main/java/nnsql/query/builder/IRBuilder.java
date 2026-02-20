@@ -203,6 +203,14 @@ public class IRBuilder {
             case MinorThan lt -> toComparison(lt, "<");
             case GreaterThanEquals gte -> toComparison(gte, ">=");
             case MinorThanEquals lte -> toComparison(lte, "<=");
+            case Between between -> {
+                var left = toExpression(between.getLeftExpression());
+                var start = toExpression(between.getBetweenExpressionStart());
+                var end = toExpression(between.getBetweenExpressionEnd());
+                yield between.isNot()
+                    ? Condition.or(Condition.lt(left, start), Condition.gt(left, end))
+                    : Condition.and(Condition.gte(left, start), Condition.lte(left, end));
+            }
             case ParenthesedExpressionList<?> p -> toCondition(p.getFirst());
             default -> throw new UnsupportedOperationException(
                 "Unsupported condition: " + expr.getClass().getSimpleName());
