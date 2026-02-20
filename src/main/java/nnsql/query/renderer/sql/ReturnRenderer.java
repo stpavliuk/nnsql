@@ -1,7 +1,13 @@
 package nnsql.query.renderer.sql;
 
+import net.sf.jsqlparser.statement.select.PlainSelect;
+
 import nnsql.query.ir.Return;
 import nnsql.query.renderer.RenderContext;
+
+import java.util.List;
+
+import static nnsql.query.renderer.sql.Sql.*;
 
 class ReturnRenderer {
 
@@ -14,19 +20,22 @@ class ReturnRenderer {
     }
 
     private void addIdCTE(RenderContext ctx, String baseName, String inputBaseName) {
-        var definition = "SELECT id FROM " + inputBaseName + "_id";
-        ctx.addCTE(baseName + "_id", definition);
+        var ps = new PlainSelect();
+        ps.addSelectItem(column("id"));
+        ps.setFromItem(table(idTable(inputBaseName)));
+
+        ctx.addCTE(idTable(baseName), ps.toString());
     }
 
     private void addAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
-                                  java.util.List<Return.AttributeRef> selectedAttributes) {
+                                   List<Return.AttributeRef> selectedAttributes) {
         selectedAttributes.forEach(attr -> {
-            var definition = """
-                SELECT id, v FROM %s_%s""".formatted(
-                    inputBaseName, attr.sourceName()
-                );
+            var ps = new PlainSelect();
+            ps.addSelectItem(column("id"));
+            ps.addSelectItem(column("v"));
+            ps.setFromItem(table(attrTable(inputBaseName, attr.sourceName())));
 
-            ctx.addCTE(baseName + "_attr_" + attr.alias(), definition);
+            ctx.addCTE(attrCTE(baseName, attr.alias()), ps.toString());
         });
     }
 }

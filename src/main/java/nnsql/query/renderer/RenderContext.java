@@ -4,9 +4,8 @@ import java.util.*;
 import java.util.regex.Pattern;
 
 public class RenderContext {
-    private final Map<String, Object> state      = new HashMap<>();
-    private final List<CTE>           ctes       = new ArrayList<>();
-    private int                       cteCounter = 0;
+    private final List<CTE> ctes       = new ArrayList<>();
+    private int             cteCounter = 0;
 
     public void addCTE(String name, String definition) {
         ctes.add(new CTE(name, definition));
@@ -26,20 +25,12 @@ public class RenderContext {
         Queue<String> toVisit = new LinkedList<>(rootCTENames);
 
         while (!toVisit.isEmpty()) {
-            String cteName = toVisit.poll();
-            if (used.contains(cteName)) {
-                continue;
-            }
+            String name = toVisit.poll();
+            if (!used.add(name)) continue;
 
-            used.add(cteName);
-            CTE cte = cteMap.get(cteName);
+            CTE cte = cteMap.get(name);
             if (cte != null) {
-                Set<String> referenced = findReferencedCTEs(cte.definition(), cteMap.keySet());
-                for (String ref : referenced) {
-                    if (!used.contains(ref)) {
-                        toVisit.add(ref);
-                    }
-                }
+                toVisit.addAll(findReferencedCTEs(cte.definition(), cteMap.keySet()));
             }
         }
 
@@ -67,17 +58,5 @@ public class RenderContext {
 
     public String nextName(String prefix) {
         return prefix + (cteCounter++);
-    }
-
-    public void put(String key, Object value) {
-        state.put(key, value);
-    }
-
-    public Object get(String key) {
-        return state.get(key);
-    }
-
-    public boolean contains(String key) {
-        return state.containsKey(key);
     }
 }

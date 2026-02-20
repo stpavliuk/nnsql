@@ -23,10 +23,6 @@ public record IRPipeline(Option<IRNode> current, AtomicInteger nodeIdCounter) {
         };
     }
 
-    public IRPipeline filterIf(Condition condition, List<String> attributes) {
-        return condition != null ? filter(condition, attributes) : this;
-    }
-
     public IRPipeline group(
         List<String> groupingAttributes,
         List<IRExpression.Aggregate> aggregates,
@@ -65,10 +61,6 @@ public record IRPipeline(Option<IRNode> current, AtomicInteger nodeIdCounter) {
             case Some(IRNode node) -> withCurrent(new DuplElim(node, attributes));
             case None() -> throw new IllegalStateException("Cannot apply DISTINCT without a source");
         };
-    }
-
-    public IRPipeline duplElimIf(boolean shouldApply, List<String> attributes) {
-        return shouldApply ? duplElim(attributes) : this;
     }
 
     public IRNode build() {

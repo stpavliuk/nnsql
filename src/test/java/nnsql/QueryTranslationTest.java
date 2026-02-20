@@ -129,11 +129,7 @@ class QueryTranslationTest {
                 duplelim_3_id AS (
                     SELECT return_2_id.id
                     FROM return_2_id
-                    WHERE NOT EXISTS (
-                      SELECT * FROM return_2_id R1
-                      WHERE R1.id < return_2_id.id
-                        AND (EXISTS (SELECT * FROM return_2_attr_R_A TEMP1, return_2_attr_R_A TEMP2 WHERE TEMP1.id = return_2_id.id AND TEMP2.id = R1.id AND TEMP1.v = TEMP2.v) OR NOT EXISTS (SELECT * FROM return_2_attr_R_A WHERE return_2_attr_R_A.id = return_2_id.id OR return_2_attr_R_A.id = R1.id))
-                    )
+                    WHERE NOT EXISTS (SELECT * FROM return_2_id R1 WHERE R1.id < return_2_id.id AND (EXISTS (SELECT * FROM return_2_attr_R_A TEMP1, return_2_attr_R_A TEMP2 WHERE TEMP1.id = return_2_id.id AND TEMP2.id = R1.id AND TEMP1.v = TEMP2.v) OR NOT EXISTS (SELECT * FROM return_2_attr_R_A WHERE return_2_attr_R_A.id = return_2_id.id OR return_2_attr_R_A.id = R1.id)))
                 ),
                 duplelim_3_attr_R_A AS (
                     SELECT return_2_attr_R_A.*
@@ -195,10 +191,7 @@ class QueryTranslationTest {
                 group_2_id AS (
                     SELECT filter_1_id.id
                     FROM filter_1_id
-                    WHERE NOT EXISTS (
-                        SELECT * FROM filter_1_id R1
-                        WHERE R1.id < filter_1_id.id AND EXISTS (SELECT * FROM filter_1_R_A a1, filter_1_R_A a2 WHERE a1.id = filter_1_id.id AND a2.id = R1.id AND a1.v = a2.v)
-                    )
+                    WHERE NOT EXISTS (SELECT * FROM filter_1_id R1 WHERE R1.id < filter_1_id.id AND EXISTS (SELECT * FROM filter_1_R_A a1, filter_1_R_A a2 WHERE a1.id = filter_1_id.id AND a2.id = R1.id AND a1.v = a2.v))
                 ),
                 group_2_R_A AS (
                     SELECT filter_1_R_A.*
@@ -444,10 +437,7 @@ class QueryTranslationTest {
                 group_6_id AS (
                 SELECT filter_1_id.id
                 FROM filter_1_id
-                    WHERE NOT EXISTS (
-                        SELECT * FROM filter_1_id R1
-                        WHERE R1.id < filter_1_id.id AND EXISTS (SELECT * FROM filter_1_customer_c_mktsegment a1, filter_1_customer_c_mktsegment a2 WHERE a1.id = filter_1_id.id AND a2.id = R1.id AND a1.v = a2.v)
-                    )
+                    WHERE NOT EXISTS (SELECT * FROM filter_1_id R1 WHERE R1.id < filter_1_id.id AND EXISTS (SELECT * FROM filter_1_customer_c_mktsegment a1, filter_1_customer_c_mktsegment a2 WHERE a1.id = filter_1_id.id AND a2.id = R1.id AND a1.v = a2.v))
                 ),
                 group_6_customer_c_mktsegment AS (
                     SELECT filter_1_customer_c_mktsegment.*
@@ -461,10 +451,7 @@ class QueryTranslationTest {
                     UNION
                     SELECT group_6_id.id, 0 AS v
                     FROM group_6_id
-                    WHERE NOT EXISTS (
-                        SELECT * FROM filter_1_id input_id, filter_1_customer_c_custkey
-                        WHERE filter_1_customer_c_custkey.id = input_id.id AND EXISTS (SELECT * FROM filter_1_customer_c_mktsegment g1, filter_1_customer_c_mktsegment g2 WHERE g1.id = input_id.id AND g2.id = group_6_id.id AND g1.v = g2.v)
-                    )
+                    WHERE NOT EXISTS (SELECT * FROM filter_1_id input_id, filter_1_customer_c_custkey WHERE filter_1_customer_c_custkey.id = input_id.id AND EXISTS (SELECT * FROM filter_1_customer_c_mktsegment g1, filter_1_customer_c_mktsegment g2 WHERE g1.id = input_id.id AND g2.id = group_6_id.id AND g1.v = g2.v))
                 ),
                 aggfilter_7_id AS (
                     SELECT group_6_id.id
@@ -492,6 +479,83 @@ class QueryTranslationTest {
                     FROM return_8_id
                     JOIN return_8_attr_mkt ON return_8_id.id = return_8_attr_mkt.id
                     JOIN return_8_attr_seg ON return_8_id.id = return_8_attr_seg.id;
+                """
+        );
+    }
+
+    @Test
+    void testCTE() {
+        assertQueryTranslation(
+            // language=sql
+            "WITH ctr AS (SELECT A, B FROM R WHERE B > 5) SELECT A FROM ctr WHERE B = 10",
+            // language=sql
+            """
+                WITH all_ids_product_1 AS (
+                    SELECT R__ID.id || '_0' AS id, R__ID.id AS id1 FROM R__ID AS R__ID
+                ),
+                product_1_id AS (
+                    SELECT id FROM all_ids_product_1
+                ),
+                product_1_R_A AS (
+                    SELECT all_ids_product_1.id, R_A.v FROM all_ids_product_1, R_A WHERE all_ids_product_1.id1 = R_A.id
+                ),
+                product_1_R_B AS (
+                    SELECT all_ids_product_1.id, R_B.v FROM all_ids_product_1, R_B WHERE all_ids_product_1.id1 = R_B.id
+                ),
+                filter_2_id AS (
+                    SELECT product_1_id.id FROM product_1_id WHERE EXISTS (SELECT * FROM product_1_R_B WHERE product_1_R_B.id = product_1_id.id AND product_1_R_B.v > 5.0)
+                ),
+                filter_2_R_A AS (
+                    SELECT product_1_R_A.* FROM product_1_R_A JOIN filter_2_id ON filter_2_id.id = product_1_R_A.id
+                ),
+                filter_2_R_B AS (
+                    SELECT product_1_R_B.* FROM product_1_R_B JOIN filter_2_id ON filter_2_id.id = product_1_R_B.id
+                ),
+                return_3_id AS (
+                    SELECT id FROM filter_2_id
+                ),
+                return_3_attr_A AS (
+                    SELECT id, v FROM filter_2_R_A
+                ),
+                return_3_attr_B AS (
+                    SELECT id, v FROM filter_2_R_B
+                ),
+                ctr__ID AS (
+                    SELECT id FROM return_3_id
+                ),
+                ctr_A AS (
+                    SELECT id, v FROM return_3_attr_A
+                ),
+                ctr_B AS (
+                    SELECT id, v FROM return_3_attr_B
+                ),
+                all_ids_product_0 AS (
+                    SELECT ctr__ID.id || '_0' AS id, ctr__ID.id AS id1 FROM ctr__ID AS ctr__ID
+                ),
+                product_0_id AS (
+                    SELECT id FROM all_ids_product_0
+                ),
+                product_0_ctr_A AS (
+                    SELECT all_ids_product_0.id, ctr_A.v FROM all_ids_product_0, ctr_A WHERE all_ids_product_0.id1 = ctr_A.id
+                ),
+                product_0_ctr_B AS (
+                    SELECT all_ids_product_0.id, ctr_B.v FROM all_ids_product_0, ctr_B WHERE all_ids_product_0.id1 = ctr_B.id
+                ),
+                filter_4_id AS (
+                    SELECT product_0_id.id FROM product_0_id WHERE EXISTS (SELECT * FROM product_0_ctr_B WHERE product_0_ctr_B.id = product_0_id.id AND product_0_ctr_B.v = 10.0)
+                ),
+                filter_4_ctr_A AS (
+                    SELECT product_0_ctr_A.* FROM product_0_ctr_A JOIN filter_4_id ON filter_4_id.id = product_0_ctr_A.id
+                ),
+                return_5_id AS (
+                    SELECT id FROM filter_4_id
+                ),
+                return_5_attr_A AS (
+                    SELECT id, v FROM filter_4_ctr_A
+                )
+                SELECT return_5_attr_A.v AS A
+                FROM return_5_id
+                JOIN return_5_attr_A ON return_5_id.id = return_5_attr_A.id;\
                 """
         );
     }

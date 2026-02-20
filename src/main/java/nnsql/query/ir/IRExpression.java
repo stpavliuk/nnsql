@@ -46,19 +46,6 @@ public sealed interface IRExpression {
         }
     }
 
-    record Arithmetic(IRExpression left, String operator, IRExpression right) implements IRExpression {
-        public Arithmetic {
-            throw new UnsupportedOperationException(
-                "Arithmetic expressions not yet implemented: " +
-                left + " " + operator + " " + right);
-        }
-
-        @Override
-        public String toString() {
-            return "(%s %s %s)".formatted(left, operator, right);
-        }
-    }
-
     record Aggregate(String function, IRExpression argument, String alias) implements IRExpression {
         public Aggregate {
             var validFunctions = java.util.Set.of("SUM", "AVG", "COUNT", "MIN", "MAX");

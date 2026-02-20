@@ -1,9 +1,21 @@
 package nnsql.query.renderer.sql;
 
+import net.sf.jsqlparser.expression.Alias;
+import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+
 import nnsql.query.ir.*;
 import nnsql.query.renderer.*;
 
 import java.util.stream.Collectors;
+
+import static nnsql.query.renderer.sql.Sql.attrCTE;
+import static nnsql.query.renderer.sql.Sql.attrTable;
+import static nnsql.query.renderer.sql.Sql.column;
+import static nnsql.query.renderer.sql.Sql.idTable;
+import static nnsql.query.renderer.sql.Sql.join;
+import static nnsql.query.renderer.sql.Sql.table;
+import static nnsql.query.renderer.sql.Sql.withSelect;
 
 public class SQLIRRenderer implements IRRenderer {
 
@@ -42,7 +54,7 @@ public class SQLIRRenderer implements IRRenderer {
                               .map(CTE::format)
                               .collect(Collectors.joining(",\n"));
 
-        return Format.withSelect(ctesStr, finalSelect);
+        return withSelect(ctesStr, finalSelect);
     }
 
     private java.util.Set<String> findReferencedCTENames(String finalSelect, RenderContext ctx) {
@@ -62,6 +74,7 @@ public class SQLIRRenderer implements IRRenderer {
     private String renderNode(IRNode node, RenderContext ctx) {
         return switch (node) {
             case Product p -> renderWithoutInput("product_", ctx, (c, b) -> {
+                preRenderSubqueryRelations(p, c);
                 productRenderer.render(p, c, b);
                 return b;
             });
@@ -81,6 +94,19 @@ public class SQLIRRenderer implements IRRenderer {
             case DuplElim d -> renderWithInput("duplelim_", d.input(), ctx,
                 (c, b, i) -> duplElimRenderer.render(d, c, b, i));
         };
+    }
+
+    private void preRenderSubqueryRelations(Product product, RenderContext ctx) {
+        for (var rel : product.relations()) {
+            if (rel instanceof Relation.Subquery(var alias, var ir, var attrs)) {
+                var subqBaseName = renderNode(ir, ctx);
+                ctx.addCTE(alias + "__ID", "SELECT id FROM " + idTable(subqBaseName));
+                for (var attr : attrs) {
+                    ctx.addCTE(attrTable(alias, attr),
+                        "SELECT id, v FROM " + attrCTE(subqBaseName, attr));
+                }
+            }
+        }
     }
 
     private String renderWithoutInput(String prefix, RenderContext ctx,
@@ -108,19 +134,21 @@ public class SQLIRRenderer implements IRRenderer {
     }
 
     private String buildProjectionSelect(String baseName, java.util.List<Return.AttributeRef> attrs) {
-        var selectClause = attrs.stream()
-                                .map(attr -> Format.attrCTE(baseName, attr.alias()) + ".v AS " + attr.alias())
-                                .collect(Collectors.joining(", "));
+        var baseIdTbl = table(idTable(baseName));
 
-        var joins = attrs
-            .stream()
-            .map(attr -> "JOIN %s ON %s_id.id = %s.id".formatted(
-                Format.attrCTE(baseName, attr.alias()),
-                baseName,
-                Format.attrCTE(baseName, attr.alias())))
-            .collect(Collectors.joining("\n"));
+        var ps = new PlainSelect();
+        for (var attr : attrs) {
+            var attrTbl = table(attrCTE(baseName, attr.alias()));
+            ps.addSelectItem(column(attrTbl, "v"), new Alias(attr.alias()));
+        }
+        ps.setFromItem(baseIdTbl);
+        for (var attr : attrs) {
+            var attrTbl = table(attrCTE(baseName, attr.alias()));
+            ps.addJoins(join(attrTbl,
+                new EqualsTo(column(baseIdTbl, "id"), column(attrTbl, "id"))));
+        }
 
-        return "SELECT %s\nFROM %s_id\n%s;".formatted(selectClause, baseName, joins);
+        return ps + ";";
     }
 
     private Return findReturnNode(IRNode node) {

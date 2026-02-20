@@ -12,13 +12,16 @@ import nnsql.query.ir.*;
 import nnsql.query.ir.Return.AttributeRef;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class IRBuilder {
     private final SchemaRegistry schema;
     private final AtomicInteger nodeIdCounter = new AtomicInteger(0);
+    private final Map<String, Relation.Subquery> cteDefinitions = new LinkedHashMap<>();
 
     private static final Set<String> AGGREGATE_FUNCTIONS =
         Set.of("COUNT", "SUM", "AVG", "MIN", "MAX");
@@ -28,6 +31,22 @@ public class IRBuilder {
     }
 
     public IRNode build(PlainSelect select) {
+        cteDefinitions.clear();
+
+        if (select.getWithItemsList() != null) {
+            for (var withItem : select.getWithItemsList()) {
+                var cteName = withItem.getAliasName();
+                var cteBody = (PlainSelect) withItem.getSelect().getSelect();
+                var cteIR = buildSelect(cteBody);
+                var attributes = AttributeResolver.collectFrom(cteIR);
+                cteDefinitions.put(cteName, new Relation.Subquery(cteName, cteIR, attributes));
+            }
+        }
+
+        return buildSelect(select);
+    }
+
+    private IRNode buildSelect(PlainSelect select) {
         var pipeline = IRPipeline.start();
 
         var relations = extractRelations(select);
@@ -86,6 +105,12 @@ public class IRBuilder {
             case Table t -> {
                 var tableName = t.getName();
                 var alias = t.getAlias() != null ? t.getAlias().getName() : tableName;
+
+                var cteDef = cteDefinitions.get(tableName);
+                if (cteDef != null) {
+                    yield new Relation.Subquery(alias, cteDef.ir(), cteDef.attributes());
+                }
+
                 var attributes = schema.getAttributes(tableName);
 
                 if (attributes.isEmpty()) {
@@ -100,7 +125,7 @@ public class IRBuilder {
                 var alias = ps.getAlias() != null
                     ? ps.getAlias().getName()
                     : "subq" + nodeIdCounter.getAndIncrement();
-                var subqueryIR = build((PlainSelect) ps.getSelect());
+                var subqueryIR = buildSelect((PlainSelect) ps.getSelect());
                 var attributes = AttributeResolver.collectFrom(subqueryIR);
                 yield new Relation.Subquery(alias, subqueryIR, attributes);
             }
@@ -145,7 +170,7 @@ public class IRBuilder {
     }
 
     private IRExpression.ScalarSubquery toScalarSubquery(ParenthesedSelect ps) {
-        var subqueryIR = build((PlainSelect) ps.getSelect());
+        var subqueryIR = buildSelect((PlainSelect) ps.getSelect());
         var pipeline = new ArrayList<IRNode>();
         pipeline.addFirst(subqueryIR);
         return new IRExpression.ScalarSubquery(pipeline);
@@ -223,8 +248,6 @@ public class IRBuilder {
             case IRExpression.ColumnRef col -> col.columnName();
             case IRExpression.Literal _ ->
                 throw new IllegalArgumentException("Cannot use literal in SELECT without alias");
-            case IRExpression.Arithmetic _ ->
-                throw new IllegalArgumentException("Cannot use arithmetic expression in SELECT without alias");
             case IRExpression.Aggregate agg -> agg.alias();
             case IRExpression.ScalarSubquery _ ->
                 throw new IllegalArgumentException("Cannot use scalar subquery in SELECT without alias");
@@ -365,8 +388,7 @@ public class IRBuilder {
             case IRExpression.ColumnRef(var columnName) ->
                 new IRExpression.ColumnRef(AttributeResolver.resolve(columnName, availableAttrs));
             case IRExpression.Literal lit -> lit;
-            case IRExpression.Arithmetic _,
-                 IRExpression.Aggregate _,
+            case IRExpression.Aggregate _,
                  IRExpression.ScalarSubquery _ -> expr;
         };
     }

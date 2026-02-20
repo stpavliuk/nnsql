@@ -1,9 +1,17 @@
 package nnsql.query.renderer.sql;
 
+import net.sf.jsqlparser.expression.Expression;
+import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.statement.select.AllColumns;
+import net.sf.jsqlparser.statement.select.AllTableColumns;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+
 import nnsql.query.ir.DuplElim;
 import nnsql.query.renderer.RenderContext;
 
-import java.util.stream.Collectors;
+import java.util.List;
+
+import static nnsql.query.renderer.sql.Sql.*;
 
 class DuplElimRenderer {
 
@@ -13,59 +21,75 @@ class DuplElimRenderer {
     }
 
     private void addIdCTE(RenderContext ctx, String baseName, String inputBaseName, DuplElim duplElim) {
+        var inputIdTbl = table(idTable(inputBaseName));
+        var r1Tbl = tableAlias(idTable(inputBaseName), "R1");
+
         var equalityConditions = duplElim.attributes().stream()
-            .map(attr -> generateEqualityCondition(inputBaseName, attr))
-            .map(cond -> "    AND " + cond)
-            .collect(Collectors.joining("\n"));
+            .map(attr -> (Expression) generateEqualityCondition(inputBaseName, attr))
+            .toList();
 
-        var definition = """
-            SELECT %s_id.id
-            FROM %s_id
-            WHERE NOT EXISTS (
-              SELECT * FROM %s_id R1
-              WHERE R1.id < %s_id.id
-            %s
-            )""".formatted(
-                inputBaseName,
-                inputBaseName,
-                inputBaseName,
-                inputBaseName,
-                equalityConditions
-            );
+        var subquery = new PlainSelect();
+        subquery.addSelectItem(new AllColumns());
+        subquery.setFromItem(r1Tbl);
 
-        ctx.addCTE(baseName + "_id", definition);
+        Expression subWhere = new net.sf.jsqlparser.expression.operators.relational.MinorThan(
+            column("R1", "id"), column(inputIdTbl, "id"));
+        for (var cond : equalityConditions) {
+            subWhere = and(subWhere, cond);
+        }
+        subquery.setWhere(subWhere);
+
+        var ps = new PlainSelect();
+        ps.addSelectItem(column(inputIdTbl, "id"));
+        ps.setFromItem(inputIdTbl);
+        ps.setWhere(notExists(subquery));
+
+        ctx.addCTE(idTable(baseName), ps.toString());
     }
 
     private void addAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
-                                  java.util.List<String> attributes) {
+                                   List<String> attributes) {
         attributes.forEach(attr -> {
-            var inputAttrCTE = inputBaseName + "_attr_" + attr;
-            var definition = """
-                SELECT %s.*
-                FROM %s JOIN %s_id ON %s_id.id = %s.id""".formatted(
-                    inputAttrCTE,
-                    inputAttrCTE, baseName, baseName, inputAttrCTE
-                );
+            var inputAttrCTEName = attrCTE(inputBaseName, attr);
+            var inputAttrTbl = table(inputAttrCTEName);
+            var baseIdTbl = table(idTable(baseName));
 
-            ctx.addCTE(baseName + "_attr_" + attr, definition);
+            var ps = new PlainSelect();
+            ps.addSelectItem(new AllTableColumns(inputAttrTbl));
+            ps.setFromItem(inputAttrTbl);
+            ps.addJoins(join(baseIdTbl,
+                new EqualsTo(column(baseIdTbl, "id"), column(inputAttrTbl, "id"))));
+
+            ctx.addCTE(attrCTE(baseName, attr), ps.toString());
         });
     }
 
-    private String generateEqualityCondition(String relationName, String attr) {
-        var attrTable = relationName + "_attr_" + attr;
+    private Expression generateEqualityCondition(String relationName, String attr) {
+        var attrTableName = attrCTE(relationName, attr);
+        var temp1 = tableAlias(attrTableName, "TEMP1");
+        var temp2 = tableAlias(attrTableName, "TEMP2");
+        var idTbl = table(idTable(relationName));
 
-        return """
-            (EXISTS (SELECT * FROM %s TEMP1, %s TEMP2 \
-            WHERE TEMP1.id = %s_id.id \
-            AND TEMP2.id = R1.id AND TEMP1.v = TEMP2.v) \
-            OR NOT EXISTS (SELECT * FROM %s \
-            WHERE %s.id = %s_id.id \
-            OR %s.id = R1.id))""".formatted(
-                attrTable, attrTable,
-                relationName,
-                attrTable,
-                attrTable, relationName,
-                attrTable
-            );
+        // EXISTS: both rows have matching values
+        var existsSelect = new PlainSelect();
+        existsSelect.addSelectItem(new AllColumns());
+        existsSelect.setFromItem(temp1);
+        existsSelect.addJoins(simpleJoin(temp2));
+        existsSelect.setWhere(andAll(List.of(
+            new EqualsTo(column("TEMP1", "id"), column(idTbl, "id")),
+            new EqualsTo(column("TEMP2", "id"), column("R1", "id")),
+            new EqualsTo(column("TEMP1", "v"), column("TEMP2", "v"))
+        )));
+
+        // NOT EXISTS: neither row has a value for this attribute
+        var notExistsSelect = new PlainSelect();
+        notExistsSelect.addSelectItem(new AllColumns());
+        notExistsSelect.setFromItem(table(attrTableName));
+        notExistsSelect.setWhere(or(
+            new EqualsTo(column(attrTableName, "id"), column(idTbl, "id")),
+            new EqualsTo(column(attrTableName, "id"), column("R1", "id"))
+        ));
+
+        return paren(or(exists(existsSelect), notExists(notExistsSelect)));
     }
 }

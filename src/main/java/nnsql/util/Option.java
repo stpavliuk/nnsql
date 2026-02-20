@@ -1,6 +1,9 @@
 package nnsql.util;
 
 import java.util.NoSuchElementException;
+import java.util.function.Function;
+import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 sealed public interface Option<T> {
     record Some<T>(T value) implements Option<T> {}
@@ -44,19 +47,45 @@ sealed public interface Option<T> {
         };
     }
 
-    default T orElseGet(java.util.function.Supplier<? extends T> supplier) {
+    default T orElseGet(Supplier<? extends T> supplier) {
         return switch (this) {
             case Some<T>(var value) -> value;
             case None<T> _ -> supplier.get();
         };
     }
 
-    
-
-    default <U> Option<U> map(java.util.function.Function<? super T, ? extends U> mapper) {
+    default <U> Option<U> map(Function<? super T, ? extends U> mapper) {
         return switch (this) {
             case Some<T>(var value) -> some(mapper.apply(value));
             case None<T> _ -> none();
+        };
+    }
+
+    default <U> Option<U> flatMap(Function<? super T, Option<U>> mapper) {
+        return switch (this) {
+            case Some<T>(var value) -> mapper.apply(value);
+            case None<T> _ -> none();
+        };
+    }
+
+    default Option<T> or(Supplier<Option<T>> supplier) {
+        return switch (this) {
+            case Some<T> _ -> this;
+            case None<T> _ -> supplier.get();
+        };
+    }
+
+    default Stream<T> stream() {
+        return switch (this) {
+            case Some<T>(var value) -> Stream.of(value);
+            case None<T> _ -> Stream.empty();
+        };
+    }
+
+    default T orElseThrow(Supplier<RuntimeException> e) {
+        return switch (this) {
+            case Some<T>(var value) -> value;
+            case None<T> _ -> throw e.get();
         };
     }
 }

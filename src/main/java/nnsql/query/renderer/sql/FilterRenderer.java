@@ -1,9 +1,14 @@
 package nnsql.query.renderer.sql;
 
+import net.sf.jsqlparser.statement.select.AllTableColumns;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+
 import nnsql.query.ir.Filter;
 import nnsql.query.renderer.RenderContext;
 
 import java.util.List;
+
+import static nnsql.query.renderer.sql.Sql.*;
 
 record FilterRenderer(ConditionRenderer conditionRenderer) {
 
@@ -13,28 +18,30 @@ record FilterRenderer(ConditionRenderer conditionRenderer) {
     }
 
     private void addIdCTE(RenderContext ctx, String baseName, String inputBaseName, Filter filter) {
-        var definition = """
-            SELECT %s_id.id
-            FROM %s_id
-            WHERE %s""".formatted(
-                inputBaseName,
-                inputBaseName,
-                conditionRenderer.renderTrue(filter.condition(), inputBaseName, ctx)
-            );
+        var idTbl = table(idTable(inputBaseName));
 
-        ctx.addCTE(baseName + "_id", definition);
+        var ps = new PlainSelect();
+        ps.addSelectItem(column(idTbl, "id"));
+        ps.setFromItem(idTbl);
+        ps.setWhere(conditionRenderer.renderTrue(filter.condition(), inputBaseName, ctx));
+
+        ctx.addCTE(idTable(baseName), ps.toString());
     }
 
-    private void addAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName, List<String> attributes) {
+    private void addAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
+                                   List<String> attributes) {
         attributes.forEach(attr -> {
-            var definition = """
-                SELECT %s_%s.*
-                FROM %s_%s JOIN %s_id ON %s_id.id = %s_%s.id""".formatted(
-                inputBaseName, attr,
-                inputBaseName, attr, baseName, baseName, inputBaseName, attr
-            );
+            var inputAttrTbl = table(attrTable(inputBaseName, attr));
+            var baseIdTbl = table(idTable(baseName));
 
-            ctx.addCTE(baseName + "_" + attr, definition);
+            var ps = new PlainSelect();
+            ps.addSelectItem(new AllTableColumns(inputAttrTbl));
+            ps.setFromItem(inputAttrTbl);
+            ps.addJoins(join(baseIdTbl,
+                new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                    column(baseIdTbl, "id"), column(inputAttrTbl, "id"))));
+
+            ctx.addCTE(attrTable(baseName, attr), ps.toString());
         });
     }
 }

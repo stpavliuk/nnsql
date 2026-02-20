@@ -1,8 +1,17 @@
 package nnsql.query.renderer.sql;
 
+import net.sf.jsqlparser.expression.*;
+import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.schema.Table;
+import net.sf.jsqlparser.statement.select.*;
+
 import nnsql.query.ir.IRExpression;
 import nnsql.query.ir.Group;
 import nnsql.query.renderer.RenderContext;
+
+import java.util.List;
+
+import static nnsql.query.renderer.sql.Sql.*;
 
 class GroupRenderer {
 
@@ -16,48 +25,67 @@ class GroupRenderer {
         var groupingAttrs = group.groupingAttributes();
 
         if (groupingAttrs.isEmpty()) {
-            var definition = """
-                SELECT MIN(id) AS id
-                FROM %s_id""".formatted(inputBaseName);
-            ctx.addCTE(baseName + "_id", definition);
+            var ps = new PlainSelect();
+            ps.addSelectItem(fn("MIN", column("id")), new Alias("id", true));
+            ps.setFromItem(table(idTable(inputBaseName)));
+
+            ctx.addCTE(idTable(baseName), ps.toString());
         } else {
-            var equalityConditions = groupingAttrs
-                .stream()
-                .map(attr -> ("EXISTS (SELECT * FROM %s_%s a1, %s_%s a2 WHERE a1.id " +
-                              "= %s_id.id AND a2.id = R1.id AND a1.v = a2.v)")
-                    .formatted(inputBaseName, attr, inputBaseName, attr,
-                        inputBaseName))
-                .collect(java.util.stream.Collectors.joining(" AND "));
+            var inputIdTbl = table(idTable(inputBaseName));
+            var r1Tbl = tableAlias(idTable(inputBaseName), "R1");
 
-            var definition = """
-                SELECT %s_id.id
-                FROM %s_id
-                WHERE NOT EXISTS (
-                    SELECT * FROM %s_id R1
-                    WHERE R1.id < %s_id.id AND %s
-                )""".formatted(
-                inputBaseName,
-                inputBaseName,
-                inputBaseName,
-                inputBaseName,
-                equalityConditions
-            );
+            var equalityConditions = groupingAttrs.stream()
+                .map(attr -> (Expression) groupEqualityExists(inputBaseName, attr, inputIdTbl, "R1"))
+                .toList();
 
-            ctx.addCTE(baseName + "_id", definition);
+            var subquery = new PlainSelect();
+            subquery.addSelectItem(new AllColumns());
+            subquery.setFromItem(r1Tbl);
+            subquery.setWhere(and(
+                new net.sf.jsqlparser.expression.operators.relational.MinorThan(
+                    column("R1", "id"), column(inputIdTbl, "id")),
+                andAll(equalityConditions)));
+
+            var ps = new PlainSelect();
+            ps.addSelectItem(column(inputIdTbl, "id"));
+            ps.setFromItem(inputIdTbl);
+            ps.setWhere(notExists(subquery));
+
+            ctx.addCTE(idTable(baseName), ps.toString());
         }
     }
 
-    private void addGroupingAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
-                                          java.util.List<String> groupingAttributes) {
-        for (var attr : groupingAttributes) {
-            var definition = """
-                SELECT %s_%s.*
-                FROM %s_%s JOIN %s_id ON %s_id.id = %s_%s.id""".formatted(
-                inputBaseName, attr,
-                inputBaseName, attr, baseName, baseName, inputBaseName, attr
-            );
+    private Expression groupEqualityExists(String inputBaseName, String attr,
+                                            Table outerIdTable, String innerAlias) {
+        var a1 = tableAlias(attrTable(inputBaseName, attr), "a1");
+        var a2 = tableAlias(attrTable(inputBaseName, attr), "a2");
 
-            ctx.addCTE(baseName + "_" + attr, definition);
+        var ps = new PlainSelect();
+        ps.addSelectItem(new AllColumns());
+        ps.setFromItem(a1);
+        ps.addJoins(simpleJoin(a2));
+        ps.setWhere(andAll(List.of(
+            new EqualsTo(column("a1", "id"), column(outerIdTable, "id")),
+            new EqualsTo(column("a2", "id"), column(innerAlias, "id")),
+            new EqualsTo(column("a1", "v"), column("a2", "v"))
+        )));
+
+        return exists(ps);
+    }
+
+    private void addGroupingAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
+                                           List<String> groupingAttributes) {
+        for (var attr : groupingAttributes) {
+            var inputAttrTbl = table(attrTable(inputBaseName, attr));
+            var baseIdTbl = table(idTable(baseName));
+
+            var ps = new PlainSelect();
+            ps.addSelectItem(new AllTableColumns(inputAttrTbl));
+            ps.setFromItem(inputAttrTbl);
+            ps.addJoins(join(baseIdTbl,
+                new EqualsTo(column(baseIdTbl, "id"), column(inputAttrTbl, "id"))));
+
+            ctx.addCTE(attrTable(baseName, attr), ps.toString());
         }
     }
 
@@ -80,76 +108,93 @@ class GroupRenderer {
             if (functionName.equals("COUNT")) {
                 definition = renderCountAggregate(baseName, inputBaseName, columnName, groupingAttrs);
             } else {
-                definition = renderAggregate(baseName, inputBaseName, columnName, functionName, groupingAttrs);
+                definition = buildAggregateSelect(baseName, inputBaseName, columnName, functionName, groupingAttrs)
+                    .toString();
             }
 
-            ctx.addCTE(baseName + "_" + alias, definition);
+            ctx.addCTE(attrTable(baseName, alias), definition);
         }
     }
 
-    private String renderAggregate(String baseName, String inputBaseName, String columnName,
-                                   String functionName, java.util.List<String> groupingAttrs) {
-        if (groupingAttrs.isEmpty()) {
-            return """
-                SELECT %s_id.id, %s(%s_%s.v) AS v
-                FROM %s_id, %s_id input_id, %s_%s
-                WHERE %s_%s.id = input_id.id
-                GROUP BY %s_id.id""".formatted(
-                baseName, functionName, inputBaseName, columnName,
-                baseName, inputBaseName, inputBaseName, columnName,
-                inputBaseName, columnName,
-                baseName
-            );
+    private PlainSelect buildAggregateSelect(String baseName, String inputBaseName, String columnName,
+                                              String functionName, List<String> groupingAttrs) {
+        var baseIdTbl = table(idTable(baseName));
+        var inputIdTbl = tableAlias(idTable(inputBaseName), "input_id");
+        var attrTbl = table(attrTable(inputBaseName, columnName));
+
+        var ps = new PlainSelect();
+        ps.addSelectItem(column(baseIdTbl, "id"));
+        ps.addSelectItem(fn(functionName, column(attrTbl, "v")), new Alias("v", true));
+        ps.setFromItem(baseIdTbl);
+        ps.addJoins(simpleJoin(inputIdTbl), simpleJoin(attrTbl));
+
+        Expression where = new EqualsTo(column(attrTbl, "id"), column("input_id", "id"));
+
+        if (!groupingAttrs.isEmpty()) {
+            var equalityConditions = groupingAttrs.stream()
+                .map(attr -> (Expression) aggEqualityExists(inputBaseName, attr, baseName))
+                .toList();
+            where = and(where, andAll(equalityConditions));
         }
+        ps.setWhere(where);
 
-        var equalityConditions = groupingAttrs
-            .stream()
-            .map(attr -> ("EXISTS (SELECT * FROM %s_%s g1, %s_%s g2 WHERE g1.id = " +
-                          "input_id.id AND g2.id = %s_id.id AND g1.v = g2.v)")
-                .formatted(inputBaseName, attr, inputBaseName, attr, baseName))
-            .collect(java.util.stream.Collectors.joining(" AND "));
+        ps.addGroupByColumnReference(column(baseIdTbl, "id"));
 
-        return """
-            SELECT %s_id.id, %s(%s_%s.v) AS v
-            FROM %s_id, %s_id input_id, %s_%s
-            WHERE %s_%s.id = input_id.id AND %s
-            GROUP BY %s_id.id""".formatted(
-            baseName, functionName, inputBaseName, columnName,
-            baseName, inputBaseName, inputBaseName, columnName,
-            inputBaseName, columnName, equalityConditions,
-            baseName
-        );
+        return ps;
+    }
+
+    private Expression aggEqualityExists(String inputBaseName, String attr, String baseName) {
+        var g1 = tableAlias(attrTable(inputBaseName, attr), "g1");
+        var g2 = tableAlias(attrTable(inputBaseName, attr), "g2");
+
+        var ps = new PlainSelect();
+        ps.addSelectItem(new AllColumns());
+        ps.setFromItem(g1);
+        ps.addJoins(simpleJoin(g2));
+        ps.setWhere(andAll(List.of(
+            new EqualsTo(column("g1", "id"), column("input_id", "id")),
+            new EqualsTo(column("g2", "id"), column(idTable(baseName), "id")),
+            new EqualsTo(column("g1", "v"), column("g2", "v"))
+        )));
+
+        return exists(ps);
     }
 
     private String renderCountAggregate(String baseName, String inputBaseName, String columnName,
-                                        java.util.List<String> groupingAttrs) {
-        var nonCountPart = renderAggregate(baseName, inputBaseName, columnName, "COUNT", groupingAttrs);
+                                         List<String> groupingAttrs) {
+        var countSelect = buildAggregateSelect(baseName, inputBaseName, columnName, "COUNT", groupingAttrs);
 
-        String equalityConditions;
-        if (groupingAttrs.isEmpty()) {
-            equalityConditions = "TRUE";
+        var baseIdTbl = table(idTable(baseName));
+        var inputIdTbl = tableAlias(idTable(inputBaseName), "input_id");
+        var attrTbl = table(attrTable(inputBaseName, columnName));
+
+        Expression subWhere = new EqualsTo(column(attrTbl, "id"), column("input_id", "id"));
+
+        if (!groupingAttrs.isEmpty()) {
+            var equalityConditions = groupingAttrs.stream()
+                .map(attr -> (Expression) aggEqualityExists(inputBaseName, attr, baseName))
+                .toList();
+            subWhere = and(subWhere, andAll(equalityConditions));
         } else {
-            equalityConditions = groupingAttrs
-                .stream()
-                .map(attr -> ("EXISTS (SELECT * FROM %s_%s g1, %s_%s g2 WHERE g1.id = " +
-                              "input_id.id AND g2.id = %s_id.id AND g1.v = g2.v)")
-                    .formatted(inputBaseName, attr, inputBaseName, attr, baseName))
-                .collect(java.util.stream.Collectors.joining(" AND "));
+            subWhere = and(subWhere, new BooleanValue(true));
         }
 
-        return nonCountPart + """
+        var subquery = new PlainSelect();
+        subquery.addSelectItem(new AllColumns());
+        subquery.setFromItem(inputIdTbl);
+        subquery.addJoins(simpleJoin(attrTbl));
+        subquery.setWhere(subWhere);
 
-            UNION
-            SELECT %s_id.id, 0 AS v
-            FROM %s_id
-            WHERE NOT EXISTS (
-                SELECT * FROM %s_id input_id, %s_%s
-                WHERE %s_%s.id = input_id.id AND %s
-            )""".formatted(
-            baseName,
-            baseName,
-            inputBaseName, inputBaseName, columnName,
-            inputBaseName, columnName, equalityConditions
-        );
+        var zeroPart = new PlainSelect();
+        zeroPart.addSelectItem(column(baseIdTbl, "id"));
+        zeroPart.addSelectItem(new LongValue(0), new Alias("v", true));
+        zeroPart.setFromItem(baseIdTbl);
+        zeroPart.setWhere(notExists(subquery));
+
+        var union = new SetOperationList();
+        union.addSelects(countSelect, zeroPart);
+        union.addOperations(new UnionOp());
+
+        return union.toString();
     }
 }
