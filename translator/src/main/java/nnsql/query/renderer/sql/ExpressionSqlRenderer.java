@@ -56,6 +56,8 @@ final class ExpressionSqlRenderer {
             case Condition.Comparison(var left, var right, _) -> collectColumns(left, right);
             case Condition.IsNull(var attr, _) -> List.of(attr);
             case Condition.Like(var left, var pattern, _) -> collectColumns(left, pattern);
+            case Condition.Exists _ -> List.of();
+            case Condition.InSubquery(var left, _, _) -> collectColumns(left);
             case Condition.And(var operands) -> collectColumnsFromOperands(operands);
             case Condition.Or(var operands) -> collectColumnsFromOperands(operands);
             case Condition.Not(var operand) -> collectColumnsFromCondition(operand);
@@ -81,6 +83,10 @@ final class ExpressionSqlRenderer {
             }
             case Condition.Like(var left, var pattern, var negated) ->
                 like(toSqlExpr(left, baseName), toSqlExpr(pattern, baseName), negated);
+            case Condition.Exists _, Condition.InSubquery _ ->
+                throw new UnsupportedOperationException(
+                    "Subquery predicates are not supported in expression SQL rendering"
+                );
             case Condition.And(var operands) ->
                 andAll(operands.stream().map(cond -> paren(toSqlCondition(cond, baseName))).toList());
             case Condition.Or(var operands) ->

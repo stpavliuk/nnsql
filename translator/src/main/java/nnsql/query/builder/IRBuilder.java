@@ -284,6 +284,7 @@ public class IRBuilder {
             case GreaterThanEquals gte -> toComparison(gte, ">=");
             case MinorThanEquals lte -> toComparison(lte, "<=");
             case LikeExpression like -> toLikeCondition(like);
+            case ExistsExpression exists -> toExistsCondition(exists);
             case Between between -> {
                 var left = toExpression(between.getLeftExpression());
                 var start = toExpression(between.getBetweenExpressionStart());
@@ -303,8 +304,7 @@ public class IRBuilder {
         var normalized = normalizeInRightExpression(in.getRightExpression());
         var inPayloadCondition = switch (normalized.payload()) {
             case ExpressionList<?> list -> toInListCondition(in, list);
-            case ParenthesedSelect _ ->
-                throw new UnsupportedOperationException("IN with subquery is not supported");
+            case ParenthesedSelect subquery -> toInSubqueryCondition(in, subquery);
             default -> throw new UnsupportedOperationException(
                 "IN supports value lists and subqueries only"
             );
@@ -340,6 +340,26 @@ public class IRBuilder {
         return in.isNot()
             ? Condition.and(values.stream().map(v -> (Condition) Condition.neq(left, v)).toList())
             : Condition.or(values.stream().map(v -> (Condition) Condition.eq(left, v)).toList());
+    }
+
+    private Condition toExistsCondition(ExistsExpression exists) {
+        var rightExpr = exists.getRightExpression();
+        if (!(rightExpr instanceof ParenthesedSelect ps)) {
+            throw new UnsupportedOperationException("EXISTS supports subqueries only");
+        }
+
+        var subqueryIR = buildSelect((PlainSelect) ps.getSelect(), false);
+        return exists.isNot()
+            ? Condition.notExists(subqueryIR)
+            : Condition.exists(subqueryIR);
+    }
+
+    private Condition toInSubqueryCondition(InExpression in, ParenthesedSelect subquery) {
+        var left = toExpression(in.getLeftExpression());
+        var subqueryIR = buildSelect((PlainSelect) subquery.getSelect(), false);
+        return in.isNot()
+            ? Condition.notInSubquery(left, subqueryIR)
+            : Condition.inSubquery(left, subqueryIR);
     }
 
     private InRightExpression normalizeInRightExpression(Expression rightExpression) {

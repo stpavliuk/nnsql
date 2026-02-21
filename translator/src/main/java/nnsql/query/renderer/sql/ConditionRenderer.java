@@ -39,6 +39,12 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             case Condition.Like like ->
                 renderLike(like, negate, relationName, ctx);
 
+            case Condition.Exists exists ->
+                renderExists(exists, negate, ctx);
+
+            case Condition.InSubquery inSubquery ->
+                comparisonRenderer.renderInSubquery(inSubquery, relationName, negate, ctx);
+
             case Condition.And and ->
                 renderLogical(and.operands(), negate, relationName, ctx, !negate);
 
@@ -55,6 +61,12 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
         var operator = effectiveNegate ? "NOT LIKE" : "LIKE";
         var comparison = Condition.compare(like.left(), operator, like.pattern());
         return comparisonRenderer.renderTrue(comparison, relationName, ctx);
+    }
+
+    private Expression renderExists(Condition.Exists existsCondition, boolean negate, RenderContext ctx) {
+        var effectiveNegate = negate != existsCondition.isNegated();
+        var subquery = comparisonRenderer.renderExistsSubquery(existsCondition.subquery(), ctx);
+        return effectiveNegate ? notExists(subquery) : exists(subquery);
     }
 
     private Expression renderIsNull(String attr, boolean isNull, String relationName) {

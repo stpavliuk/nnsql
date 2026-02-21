@@ -49,6 +49,22 @@ public sealed interface Condition {
         return new Like(left, pattern, true);
     }
 
+    static Exists exists(IRNode subquery) {
+        return new Exists(subquery, false);
+    }
+
+    static Exists notExists(IRNode subquery) {
+        return new Exists(subquery, true);
+    }
+
+    static InSubquery inSubquery(IRExpression left, IRNode subquery) {
+        return new InSubquery(left, subquery, false);
+    }
+
+    static InSubquery notInSubquery(IRExpression left, IRNode subquery) {
+        return new InSubquery(left, subquery, true);
+    }
+
     static And and(Condition... operands) {
         return new And(List.of(operands));
     }
@@ -88,6 +104,20 @@ public sealed interface Condition {
         @Override
         public String toString() {
             return "%s %sLIKE %s".formatted(left, isNegated ? "NOT " : "", pattern);
+        }
+    }
+
+    record Exists(IRNode subquery, boolean isNegated) implements Condition {
+        @Override
+        public String toString() {
+            return "%sEXISTS (SUBQUERY)".formatted(isNegated ? "NOT " : "");
+        }
+    }
+
+    record InSubquery(IRExpression left, IRNode subquery, boolean isNegated) implements Condition {
+        @Override
+        public String toString() {
+            return "%s %sIN (SUBQUERY)".formatted(left, isNegated ? "NOT " : "");
         }
     }
 

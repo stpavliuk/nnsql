@@ -25,6 +25,13 @@ public class AttributeResolver {
                     qualifyExpression(pattern, availableAttrs),
                     negated
                 );
+            case Exists(var subquery, var negated) -> new Exists(subquery, negated);
+            case InSubquery(var left, var subquery, var negated) ->
+                new InSubquery(
+                    qualifyExpression(left, availableAttrs),
+                    subquery,
+                    negated
+                );
             case And(var operands) -> {
                 var qualifiedOperands = operands.stream()
                     .map(cond -> qualifyCondition(cond, availableAttrs))

@@ -405,14 +405,33 @@ class QueryTranslationTest {
     }
 
     @Test
-    void testInSubqueryWithTrailingAndConditionIsRejected() {
-        var exception = assertThrows(
-            UnsupportedOperationException.class,
-            () -> translator.translate(
-                "SELECT R.A FROM R WHERE R.B IN (SELECT S.B FROM S) AND R.A > 10"
-            )
-        );
-        assertEquals("IN with subquery is not supported", exception.getMessage());
+    void testExistsPredicatesWithUncorrelatedSubqueries() {
+        var existsSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE EXISTS (SELECT * FROM S WHERE S.B > 10)"
+        ));
+        assertTrue(existsSql.matches(".*WHERE EXISTS \\(SELECT \\* FROM return_\\d+_id\\).*"));
+        assertTrue(existsSql.contains("S_B.v > 10.0"));
+
+        var notExistsSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE NOT EXISTS (SELECT * FROM S WHERE S.B > 10)"
+        ));
+        assertTrue(notExistsSql.matches(".*WHERE NOT EXISTS \\(SELECT \\* FROM return_\\d+_id\\).*"));
+        assertTrue(notExistsSql.contains("S_B.v > 10.0"));
+    }
+
+    @Test
+    void testInSubqueryWithUncorrelatedSubquery() {
+        var inSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.B IN (SELECT S.B FROM S WHERE S.C > 5)"
+        ));
+        assertTrue(inSql.matches(".*product_0_R_B\\.v IN \\(SELECT v FROM return_\\d+_attr_S_B\\).*"));
+        assertTrue(inSql.contains("S_C.v > 5.0"));
+
+        var inWithAndSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.B IN (SELECT S.B FROM S) AND R.A > 10"
+        ));
+        assertTrue(inWithAndSql.matches(".*product_0_R_B\\.v IN \\(SELECT v FROM return_\\d+_attr_S_B\\).*"));
+        assertTrue(inWithAndSql.contains("product_0_R_A.v > 10.0"));
     }
 
     @Test
