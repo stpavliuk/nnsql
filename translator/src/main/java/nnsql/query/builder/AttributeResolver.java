@@ -19,6 +19,12 @@ public class AttributeResolver {
                 );
 
             case IsNull(var attr, var negated) -> new IsNull(resolve(attr, availableAttrs), negated);
+            case Like(var left, var pattern, var negated) ->
+                new Like(
+                    qualifyExpression(left, availableAttrs),
+                    qualifyExpression(pattern, availableAttrs),
+                    negated
+                );
             case And(var operands) -> {
                 var qualifiedOperands = operands.stream()
                     .map(cond -> qualifyCondition(cond, availableAttrs))

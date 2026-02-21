@@ -257,6 +257,7 @@ public class IRBuilder {
             case MinorThan lt -> toComparison(lt, "<");
             case GreaterThanEquals gte -> toComparison(gte, ">=");
             case MinorThanEquals lte -> toComparison(lte, "<=");
+            case LikeExpression like -> toLikeCondition(like);
             case Between between -> {
                 var left = toExpression(between.getLeftExpression());
                 var start = toExpression(between.getBetweenExpressionStart());
@@ -364,6 +365,21 @@ public class IRBuilder {
         var left = toExpression(op.getLeftExpression());
         var right = toExpression(op.getRightExpression());
         return Condition.compare(left, operator, right);
+    }
+
+    private Condition toLikeCondition(LikeExpression like) {
+        if (like.getEscape() != null) {
+            throw new UnsupportedOperationException("LIKE ... ESCAPE is not supported");
+        }
+        if (like.isCaseInsensitive()) {
+            throw new UnsupportedOperationException("Case-insensitive LIKE is not supported");
+        }
+
+        var left = toExpression(like.getLeftExpression());
+        var pattern = toExpression(like.getRightExpression());
+        return like.isNot()
+            ? Condition.notLike(left, pattern)
+            : Condition.like(left, pattern);
     }
 
     private boolean hasAggregatesInSelect(PlainSelect select) {

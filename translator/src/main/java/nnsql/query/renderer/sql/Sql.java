@@ -63,8 +63,18 @@ final class Sql {
             case ">" -> new GreaterThan(left, right);
             case "<=" -> new MinorThanEquals(left, right);
             case ">=" -> new GreaterThanEquals(left, right);
+            case "LIKE" -> like(left, right, false);
+            case "NOT LIKE" -> like(left, right, true);
             default -> throw new IllegalArgumentException("Unknown operator: " + op);
         };
+    }
+
+    static LikeExpression like(Expression left, Expression right, boolean negated) {
+        var like = new LikeExpression();
+        like.setLeftExpression(left);
+        like.setRightExpression(right);
+        like.setNot(negated);
+        return like;
     }
 
     static Expression and(Expression a, Expression b) {

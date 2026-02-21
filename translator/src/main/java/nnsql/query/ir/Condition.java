@@ -41,6 +41,14 @@ public sealed interface Condition {
         return new IsNull(attrName, true);
     }
 
+    static Like like(IRExpression left, IRExpression pattern) {
+        return new Like(left, pattern, false);
+    }
+
+    static Like notLike(IRExpression left, IRExpression pattern) {
+        return new Like(left, pattern, true);
+    }
+
     static And and(Condition... operands) {
         return new And(List.of(operands));
     }
@@ -73,6 +81,13 @@ public sealed interface Condition {
         public String toString() {
             return isNegated ? "%s IS NOT NULL".formatted(attrName)
                              : "%s IS NULL".formatted(attrName);
+        }
+    }
+
+    record Like(IRExpression left, IRExpression pattern, boolean isNegated) implements Condition {
+        @Override
+        public String toString() {
+            return "%s %sLIKE %s".formatted(left, isNegated ? "NOT " : "", pattern);
         }
     }
 

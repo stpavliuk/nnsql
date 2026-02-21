@@ -36,6 +36,9 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             case Condition.IsNull(var attr, var negated) ->
                 renderIsNull(attr, negated == negate, relationName);
 
+            case Condition.Like like ->
+                renderLike(like, negate, relationName, ctx);
+
             case Condition.And and ->
                 renderLogical(and.operands(), negate, relationName, ctx, !negate);
 
@@ -45,6 +48,13 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             case Condition.Not not ->
                 render(not.operand(), relationName, !negate, ctx);
         };
+    }
+
+    private Expression renderLike(Condition.Like like, boolean negate, String relationName, RenderContext ctx) {
+        var effectiveNegate = negate != like.isNegated();
+        var operator = effectiveNegate ? "NOT LIKE" : "LIKE";
+        var comparison = Condition.compare(like.left(), operator, like.pattern());
+        return comparisonRenderer.renderTrue(comparison, relationName, ctx);
     }
 
     private Expression renderIsNull(String attr, boolean isNull, String relationName) {

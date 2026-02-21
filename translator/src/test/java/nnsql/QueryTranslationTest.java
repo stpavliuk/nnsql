@@ -371,6 +371,26 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testLikePredicates() {
+        var likeSql = normalizeWhitespace(translator.translate(
+            "SELECT customer.c_custkey FROM customer WHERE customer.c_mktsegment LIKE 'AUTO%'"
+        ));
+        assertTrue(likeSql.contains("product_0_customer_c_mktsegment.v LIKE 'AUTO%'"));
+
+        var notLikeSql = normalizeWhitespace(translator.translate(
+            "SELECT customer.c_custkey FROM customer WHERE customer.c_mktsegment NOT LIKE 'AUTO%'"
+        ));
+        assertTrue(notLikeSql.contains("product_0_customer_c_mktsegment.v NOT LIKE 'AUTO%'"));
+
+        var caseWhenLikeSql = normalizeWhitespace(translator.translate(
+            "SELECT CASE WHEN customer.c_mktsegment LIKE 'AUTO%' THEN 1 ELSE 0 END AS flag FROM customer"
+        ));
+        assertTrue(caseWhenLikeSql.contains(
+            "CASE WHEN product_0_customer_c_mktsegment.v LIKE 'AUTO%' THEN 1.0 ELSE 0.0 END"
+        ));
+    }
+
+    @Test
     void testInPredicateWithTrailingAndCondition() {
         var sql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.A = 5 AND R.B IN (1, 2, 3) AND R.B > 0"

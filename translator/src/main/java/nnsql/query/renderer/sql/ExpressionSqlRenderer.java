@@ -51,6 +51,7 @@ final class ExpressionSqlRenderer {
         return switch (condition) {
             case Condition.Comparison(var left, var right, _) -> collectColumns(left, right);
             case Condition.IsNull(var attr, _) -> List.of(attr);
+            case Condition.Like(var left, var pattern, _) -> collectColumns(left, pattern);
             case Condition.And(var operands) -> collectColumnsFromOperands(operands);
             case Condition.Or(var operands) -> collectColumnsFromOperands(operands);
             case Condition.Not(var operand) -> collectColumnsFromCondition(operand);
@@ -74,6 +75,8 @@ final class ExpressionSqlRenderer {
                 isNull.setNot(negated);
                 yield isNull;
             }
+            case Condition.Like(var left, var pattern, var negated) ->
+                like(toSqlExpr(left, baseName), toSqlExpr(pattern, baseName), negated);
             case Condition.And(var operands) ->
                 andAll(operands.stream().map(cond -> paren(toSqlCondition(cond, baseName))).toList());
             case Condition.Or(var operands) ->
