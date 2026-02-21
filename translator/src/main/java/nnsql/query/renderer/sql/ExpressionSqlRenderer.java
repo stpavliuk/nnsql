@@ -25,6 +25,10 @@ final class ExpressionSqlRenderer {
                 Stream.concat(collectColumns(left).stream(), collectColumns(right).stream())
                     .distinct().toList();
             case IRExpression.Cast(var inner, _) -> collectColumns(inner);
+            case IRExpression.FunctionCall(_, var arguments) -> arguments.stream()
+                .flatMap(argument -> collectColumns(argument).stream())
+                .distinct()
+                .toList();
             case IRExpression.CaseWhen(var whens, var elseExpr) -> {
                 var whenColumns = whens.stream()
                     .flatMap(when -> Stream.concat(
@@ -91,6 +95,8 @@ final class ExpressionSqlRenderer {
             case IRExpression.CaseWhen _ -> true;
             case IRExpression.BinaryOp(var l, _, var r) -> containsCaseWhen(l) || containsCaseWhen(r);
             case IRExpression.Cast(var inner, _) -> containsCaseWhen(inner);
+            case IRExpression.FunctionCall(_, var arguments) ->
+                arguments.stream().anyMatch(ExpressionSqlRenderer::containsCaseWhen);
             case IRExpression.ColumnRef _, IRExpression.Literal _ -> false;
             case IRExpression.Aggregate _, IRExpression.ScalarSubquery _ -> false;
         };
@@ -101,9 +107,11 @@ final class ExpressionSqlRenderer {
             case IRExpression.ColumnRef(var col) -> column(attrTable(baseName, col), "v");
             case IRExpression.Literal lit -> literal(lit);
             case IRExpression.BinaryOp(var left, var op, var right) ->
-                arithmetic(toSqlExpr(left, baseName), op, toSqlExpr(right, baseName));
+                arithmetic(toSqlExpr(left, baseName), op.toSql(), toSqlExpr(right, baseName));
             case IRExpression.Cast(var inner, var targetType) ->
                 new CastExpression("CAST", toSqlExpr(inner, baseName), targetType);
+            case IRExpression.FunctionCall(var name, var arguments) ->
+                fn(name, arguments.stream().map(argument -> toSqlExpr(argument, baseName)).toArray(Expression[]::new));
             case IRExpression.CaseWhen(var whens, var elseExpr) -> {
                 var sqlCaseExpr = new CaseExpression();
                 var sqlWhens = whens.stream()

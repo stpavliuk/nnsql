@@ -54,6 +54,13 @@ public class AttributeResolver {
                     qualifyExpression(right, availableAttrs));
             case IRExpression.Cast(var inner, var targetType) ->
                 new IRExpression.Cast(qualifyExpression(inner, availableAttrs), targetType);
+            case IRExpression.FunctionCall(var name, var arguments) ->
+                new IRExpression.FunctionCall(
+                    name,
+                    arguments.stream()
+                        .map(argument -> qualifyExpression(argument, availableAttrs))
+                        .toList()
+                );
             case IRExpression.CaseWhen(var whens, var elseExpr) -> {
                 var qualifiedWhens = whens.stream()
                     .map(when -> new IRExpression.WhenClause(

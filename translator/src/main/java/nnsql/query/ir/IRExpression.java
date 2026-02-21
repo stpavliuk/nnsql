@@ -2,6 +2,10 @@ package nnsql.query.ir;
 
 import nnsql.util.Option;
 
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 public sealed interface IRExpression {
 
     enum LiteralType {
@@ -50,7 +54,7 @@ public sealed interface IRExpression {
 
     record Aggregate(String function, IRExpression argument, String alias) implements IRExpression {
         public Aggregate {
-            var validFunctions = java.util.Set.of("SUM", "AVG", "COUNT", "MIN", "MAX");
+            var validFunctions = Set.of("SUM", "AVG", "COUNT", "MIN", "MAX");
             if (!validFunctions.contains(function.toUpperCase())) {
                 throw new IllegalArgumentException("Unknown aggregate function: " + function);
             }
@@ -66,24 +70,85 @@ public sealed interface IRExpression {
         }
     }
 
-    record ScalarSubquery(java.util.List<IRNode> subqueryPipeline) implements IRExpression {
+    record ScalarSubquery(List<IRNode> subqueryPipeline) implements IRExpression {
         @Override
         public String toString() {
             return "(SUBQUERY)";
         }
     }
 
-    record BinaryOp(IRExpression left, String operator, IRExpression right) implements IRExpression {
-        public BinaryOp {
-            var validOps = java.util.Set.of("+", "-", "*", "/");
-            if (!validOps.contains(operator)) {
-                throw new IllegalArgumentException("Unknown arithmetic operator: " + operator);
-            }
+    record FunctionCall(String name, List<IRExpression> arguments) implements IRExpression {
+        public FunctionCall {
+            name = Option.ofNullable(name)
+                .map(String::strip)
+                .flatMap(value -> value.isEmpty() ? Option.none() : Option.some(value))
+                .orElseThrow(() -> new IllegalArgumentException("Function name must not be blank"));
+            arguments = List.copyOf(arguments);
         }
 
         @Override
         public String toString() {
-            return "(%s %s %s)".formatted(left, operator, right);
+            var argsSql = arguments.stream()
+                .map(IRExpression::toString)
+                .collect(Collectors.joining(", "));
+            return "%s(%s)".formatted(name, argsSql);
+        }
+    }
+
+    sealed interface ArithmeticOperator permits Add, Subtract, Multiply, Divide {
+        String symbol();
+
+        static ArithmeticOperator fromSymbol(String symbol) {
+            return switch (symbol) {
+                case "+" -> new Add();
+                case "-" -> new Subtract();
+                case "*" -> new Multiply();
+                case "/" -> new Divide();
+                default -> throw new IllegalArgumentException("Unknown arithmetic operator: " + symbol);
+            };
+        }
+
+        default String toSql() {
+            return symbol();
+        }
+    }
+
+    record Add() implements ArithmeticOperator {
+        @Override
+        public String symbol() {
+            return "+";
+        }
+    }
+
+    record Subtract() implements ArithmeticOperator {
+        @Override
+        public String symbol() {
+            return "-";
+        }
+    }
+
+    record Multiply() implements ArithmeticOperator {
+        @Override
+        public String symbol() {
+            return "*";
+        }
+    }
+
+    record Divide() implements ArithmeticOperator {
+        @Override
+        public String symbol() {
+            return "/";
+        }
+    }
+
+    record BinaryOp(IRExpression left, ArithmeticOperator operator, IRExpression right) implements IRExpression {
+        public BinaryOp(IRExpression left, String operator, IRExpression right) {
+            this(left, ArithmeticOperator.fromSymbol(operator), right);
+        }
+
+        @Override
+        public String toString() {
+            return "(%s %s %s)".formatted(left, operator.symbol(), right);
         }
     }
 
@@ -96,12 +161,12 @@ public sealed interface IRExpression {
 
     record WhenClause(Condition condition, IRExpression result) {}
 
-    record CaseWhen(java.util.List<WhenClause> whens, Option<IRExpression> elseExpr) implements IRExpression {
+    record CaseWhen(List<WhenClause> whens, Option<IRExpression> elseExpr) implements IRExpression {
         @Override
         public String toString() {
             var whensSql = whens.stream()
                 .map(when -> "WHEN %s THEN %s".formatted(when.condition(), when.result()))
-                .collect(java.util.stream.Collectors.joining(" "));
+                .collect(Collectors.joining(" "));
             var elseSql = elseExpr
                 .map(expr -> " ELSE %s".formatted(expr))
                 .orElse("");

@@ -6,6 +6,7 @@ import nnsql.query.renderer.sql.SQLIRRenderer;
 import org.junit.jupiter.api.*;
 
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -718,6 +719,16 @@ class QueryTranslationTest {
         ));
         assertTrue(combinedCastSql.contains("return_1_attr_total"));
         assertTrue(combinedCastSql.contains("CAST(product_0_R_A.v + product_0_R_B.v AS DECIMAL"));
+    }
+
+    @Test
+    void testScalarFunctionExpression() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT strftime('%Y', customer.c_comment) AS comment_year FROM customer"
+        )).toLowerCase(Locale.ROOT);
+
+        assertTrue(sql.contains("strftime('%y', product_0_customer_c_comment.v) as v"));
+        assertTrue(sql.contains("return_1_attr_comment_year"));
     }
 
     @Test

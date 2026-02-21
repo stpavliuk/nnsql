@@ -159,6 +159,7 @@ public class IRBuilder {
             case StringValue sv -> IRExpression.string(sv.getValue());
             case NullValue _ -> IRExpression.nullValue();
             case Function fn when isAggregate(fn) -> toAggregate(fn, null);
+            case Function fn -> toFunctionCall(fn);
             case CaseExpression caseExpr -> {
                 var switchExpr = caseExpr.getSwitchExpression();
                 var whens = caseExpr.getWhenClauses().stream()
@@ -221,6 +222,31 @@ public class IRBuilder {
             ? toExpression(fn.getParameters().getFirst())
             : IRExpression.number(1);
         return new IRExpression.Aggregate(functionName, argument, alias);
+    }
+
+    private IRExpression.FunctionCall toFunctionCall(Function fn) {
+        if (fn.isDistinct()) {
+            throw new UnsupportedOperationException("DISTINCT in scalar functions is not supported");
+        }
+
+        var name = Option.ofNullable(fn.getName())
+            .map(String::strip)
+            .flatMap(value -> value.isEmpty() ? Option.none() : Option.some(value))
+            .orElseThrow(() -> new UnsupportedOperationException("Unnamed function is not supported"));
+
+        var arguments = Option.ofNullable(fn.getParameters())
+            .map(parameters -> parameters.stream()
+                .map(Expression.class::cast)
+                .map(param -> switch (param) {
+                    case AllColumns _ -> throw new UnsupportedOperationException(
+                        "Scalar functions with * arguments are not supported"
+                    );
+                    default -> toExpression(param);
+                })
+                .toList())
+            .orElse(List.of());
+
+        return new IRExpression.FunctionCall(name, arguments);
     }
 
     private IRExpression.ScalarSubquery toScalarSubquery(ParenthesedSelect ps) {
@@ -427,7 +453,8 @@ public class IRBuilder {
                 var alias = selectItemAlias(item, OutputAlias.column(colName));
                 yield AttributeRef.attr(resolvedName, alias);
             }
-            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _ -> {
+            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
+                 IRExpression.FunctionCall _ -> {
                 var alias = selectItemAlias(item, OutputAlias.expression(position));
                 var qualifiedExpr = AttributeResolver.qualifyExpression(irExpr, availableAttrs);
                 yield AttributeRef.expr(qualifiedExpr, alias);
@@ -487,7 +514,8 @@ public class IRBuilder {
                 var alias = selectItemAlias(selectItem, OutputAlias.column(colName));
                 yield Option.some(AttributeRef.attr(resolvedName, alias));
             }
-            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _ -> {
+            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
+                 IRExpression.FunctionCall _ -> {
                 var alias = selectItemAlias(selectItem, OutputAlias.expression(position));
                 var qualifiedExpr = AttributeResolver.qualifyExpression(irExpr, availableAttrs);
                 yield Option.some(AttributeRef.expr(qualifiedExpr, alias));
@@ -645,6 +673,13 @@ public class IRBuilder {
                 new IRExpression.Cast(
                     qualifyAggregateArgument(inner, availableAttrs),
                     targetType
+                );
+            case IRExpression.FunctionCall(var name, var arguments) ->
+                new IRExpression.FunctionCall(
+                    name,
+                    arguments.stream()
+                        .map(arg -> qualifyAggregateArgument(arg, availableAttrs))
+                        .toList()
                 );
             case IRExpression.CaseWhen(var whens, var elseExpr) -> {
                 var qualifiedWhens = whens.stream()

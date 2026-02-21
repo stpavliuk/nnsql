@@ -31,7 +31,8 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.Literal lit ->
                 renderWithLiteral(lit, comp.right(), comp.operator(), rel, negate, ctx);
 
-            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _ ->
+            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
+                 IRExpression.FunctionCall _ ->
                 renderWithComputedExpr(comp.left(), comp.right(), comp.operator(), rel, negate);
 
             case IRExpression.ScalarSubquery _ ->
@@ -61,7 +62,8 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.ScalarSubquery subq ->
                 existsColumnToSubquery(rel, col, op, renderSubquery(subq, ctx), negate);
 
-            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _ ->
+            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
+                 IRExpression.FunctionCall _ ->
                 renderWithComputedExpr(new IRExpression.ColumnRef(col), right, op, rel, negate);
 
             case IRExpression.Aggregate _ ->
@@ -85,7 +87,8 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
                 yield comparison(literal(lit), op, sub);
             }
 
-            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _ -> {
+            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
+                 IRExpression.FunctionCall _ -> {
                 var rightCols = ExpressionSqlRenderer.collectColumns(right);
                 yield existsExprToExpr(rel, lit, right, op, rightCols, negate);
             }
