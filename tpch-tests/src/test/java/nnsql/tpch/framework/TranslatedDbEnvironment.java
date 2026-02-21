@@ -1,4 +1,4 @@
-package nnsql.tpcds.framework;
+package nnsql.tpch.framework;
 
 import nnsql.query.QueryTranslator;
 import java.nio.file.Files;
@@ -51,8 +51,8 @@ public class TranslatedDbEnvironment implements AutoCloseable {
 
     @Override
     public void close() {
-        runSilently(() -> sourceConn.close());
-        runSilently(() -> targetConn.close());
+        closeQuietly(sourceConn);
+        closeQuietly(targetConn);
 
         if (!cleanupOnClose || tempDir == null) {
             return;
@@ -63,7 +63,6 @@ public class TranslatedDbEnvironment implements AutoCloseable {
                 try {
                     Files.delete(p);
                 } catch (Exception _) {
-                    System.out.println("");
                 }
             });
         } catch (Exception e) {
@@ -91,14 +90,13 @@ public class TranslatedDbEnvironment implements AutoCloseable {
         }
     }
 
-    interface SilentRunner {
-        void run() throws Exception;
-    }
-
-    private static void runSilently(SilentRunner r) {
+    private static void closeQuietly(AutoCloseable closeable) {
+        if (closeable == null) {
+            return;
+        }
         try {
-            r.run();
-        } catch (Exception e) {
+            closeable.close();
+        } catch (Exception _) {
         }
     }
 }

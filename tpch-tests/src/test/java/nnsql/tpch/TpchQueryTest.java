@@ -1,18 +1,24 @@
-package nnsql.tpcds;
+package nnsql.tpch;
 
-import nnsql.tpcds.framework.*;
+import nnsql.tpch.framework.*;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.stream.Stream;
 
+/**
+ * End-to-end benchmark parity test:
+ * native TPCH query results from DuckDB are compared with results from translated 6NF SQL.
+ * Unit tests cover translation pieces; this class guards full pipeline behavior.
+ */
 @ExtendWith(TranslatedDbExtension.class)
-class TpcdsQueryTest {
+@Tag("integration")
+class TpchQueryTest {
 
     @TestFactory
-    Stream<DynamicTest> tpcdsQueries(TranslatedDbEnvironment env) {
+    Stream<DynamicTest> tpchQueries(TranslatedDbEnvironment env) {
         return env.queries().stream().map(q ->
-            DynamicTest.dynamicTest("TPC-DS " + q.name(), () -> {
+            DynamicTest.dynamicTest("TPC-H " + q.name(), () -> {
                 String translated;
                 try {
                     translated = env.translator().translate(q.sql());

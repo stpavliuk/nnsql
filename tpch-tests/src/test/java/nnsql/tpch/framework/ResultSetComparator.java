@@ -1,4 +1,4 @@
-package nnsql.tpcds.framework;
+package nnsql.tpch.framework;
 
 import java.math.BigDecimal;
 import java.util.*;
@@ -57,7 +57,6 @@ public class ResultSetComparator {
         return sorted;
     }
 
-    @SuppressWarnings("unchecked")
     private static int compareValues(Object a, Object b) {
         if (a == null && b == null) return 0;
         if (a == null) return 1;
@@ -67,15 +66,29 @@ public class ResultSetComparator {
             return Double.compare(na.doubleValue(), nb.doubleValue());
         }
 
-        if (a instanceof Comparable ca && b instanceof Comparable cb) {
-            try {
-                return ca.compareTo(cb);
-            } catch (ClassCastException _) {
-                return a.toString().compareTo(b.toString());
-            }
+        if (a instanceof Comparable<?> ca && b instanceof Comparable<?>) {
+            return compareComparableOrFallback(ca, b, a, b);
         }
 
         return a.toString().compareTo(b.toString());
+    }
+
+    private static int compareComparableOrFallback(
+        Comparable<?> left,
+        Object right,
+        Object fallbackLeft,
+        Object fallbackRight
+    ) {
+        try {
+            return compareTyped(left, right);
+        } catch (ClassCastException _) {
+            return fallbackLeft.toString().compareTo(fallbackRight.toString());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T extends Comparable<? super T>> int compareTyped(Comparable<?> left, Object right) {
+        return ((T) left).compareTo((T) right);
     }
 
     private static boolean valuesEqual(Object a, Object b) {
@@ -93,13 +106,18 @@ public class ResultSetComparator {
     }
 
     private static boolean isFloatingPoint(Number n) {
-        return n instanceof Float || n instanceof Double;
+        return switch (n) {
+            case Float _, Double _ -> true;
+            default -> false;
+        };
     }
 
     private static BigDecimal toBigDecimal(Number n) {
-        if (n instanceof BigDecimal bd) return bd;
-        if (n instanceof Long l) return BigDecimal.valueOf(l);
-        if (n instanceof Integer i) return BigDecimal.valueOf(i);
-        return new BigDecimal(n.toString());
+        return switch (n) {
+            case BigDecimal bd -> bd;
+            case Long l -> BigDecimal.valueOf(l);
+            case Integer i -> BigDecimal.valueOf(i);
+            default -> new BigDecimal(n.toString());
+        };
     }
 }

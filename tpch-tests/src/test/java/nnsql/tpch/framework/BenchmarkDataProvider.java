@@ -1,4 +1,4 @@
-package nnsql.tpcds.framework;
+package nnsql.tpch.framework;
 
 import java.sql.Connection;
 import java.sql.SQLException;
