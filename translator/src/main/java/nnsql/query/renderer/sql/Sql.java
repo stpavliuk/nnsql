@@ -10,10 +10,17 @@ import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.select.*;
 
 import nnsql.query.ir.IRExpression;
+import nnsql.query.renderer.RenderContext;
 
 import java.util.List;
+import java.util.function.BiFunction;
 
 final class Sql {
+
+    enum NonCaseJoinMode {
+        INNER_ON,
+        SIMPLE_JOIN_WITH_WHERE_ID
+    }
 
     private Sql() {
         throw new UnsupportedOperationException("Utility class");
@@ -157,6 +164,23 @@ final class Sql {
         return j;
     }
 
+    static void addComputedExprAttributeJoins(String baseName, List<String> columns, Expression anchorIdExpr,
+                                              boolean hasCaseWhen, NonCaseJoinMode nonCaseMode,
+                                              List<Join> joins, List<Expression> whereConditions) {
+        for (var col : columns) {
+            var attrTbl = table(attrTable(baseName, col));
+            var idEq = new EqualsTo(column(attrTbl, "id"), anchorIdExpr);
+
+            if (hasCaseWhen || nonCaseMode == NonCaseJoinMode.INNER_ON) {
+                joins.add(hasCaseWhen ? leftJoin(attrTbl, idEq) : join(attrTbl, idEq));
+                continue;
+            }
+
+            joins.add(simpleJoin(attrTbl));
+            whereConditions.add(idEq);
+        }
+    }
+
     static String attrTable(String baseName, String attr) {
         return baseName + "_" + attr;
     }
@@ -167,6 +191,30 @@ final class Sql {
 
     static String attrCTE(String baseName, String attr) {
         return baseName + "_attr_" + attr;
+    }
+
+    static void addFilterIdCTE(RenderContext ctx, String baseName, String inputBaseName, Expression where) {
+        var idTbl = table(idTable(inputBaseName));
+        var ps = new PlainSelect();
+        ps.addSelectItem(column(idTbl, "id"));
+        ps.setFromItem(idTbl);
+        ps.setWhere(where);
+        ctx.addCTE(idTable(baseName), ps.toString());
+    }
+
+    static void addPassthroughAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
+                                             List<String> attributes,
+                                             BiFunction<String, String, String> naming) {
+        attributes.forEach(attr -> {
+            var inputAttrTbl = table(naming.apply(inputBaseName, attr));
+            var baseIdTbl = table(idTable(baseName));
+            var ps = new PlainSelect();
+            ps.addSelectItem(new AllTableColumns(inputAttrTbl));
+            ps.setFromItem(inputAttrTbl);
+            ps.addJoins(join(baseIdTbl,
+                new EqualsTo(column(baseIdTbl, "id"), column(inputAttrTbl, "id"))));
+            ctx.addCTE(naming.apply(baseName, attr), ps.toString());
+        });
     }
 
     static String withSelect(String ctes, String finalSelect) {

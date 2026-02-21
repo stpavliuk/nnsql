@@ -1,7 +1,6 @@
 package nnsql.query.renderer.sql;
 
 import net.sf.jsqlparser.expression.*;
-import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
 import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
 import net.sf.jsqlparser.statement.select.*;
 
@@ -71,11 +70,15 @@ class ReturnRenderer {
         ps.setFromItem(idTbl);
 
         var joins = new ArrayList<Join>();
-        for (var col : columns) {
-            var attrTbl = table(attrTable(inputBaseName, col));
-            var onExpr = new EqualsTo(column(attrTbl, "id"), column(idTbl, "id"));
-            joins.add(hasCaseWhen ? leftJoin(attrTbl, onExpr) : join(attrTbl, onExpr));
-        }
+        addComputedExprAttributeJoins(
+            inputBaseName,
+            columns,
+            column(idTbl, "id"),
+            hasCaseWhen,
+            Sql.NonCaseJoinMode.INNER_ON,
+            joins,
+            new ArrayList<>()
+        );
         ps.setJoins(joins);
 
         if (hasCaseWhen) {

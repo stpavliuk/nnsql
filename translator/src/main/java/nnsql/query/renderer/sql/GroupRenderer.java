@@ -19,7 +19,7 @@ class GroupRenderer {
 
     void render(Group group, RenderContext ctx, String baseName, String inputBaseName) {
         addIdCTE(ctx, baseName, inputBaseName, group);
-        addGroupingAttributeCTEs(ctx, baseName, inputBaseName, group.groupingAttributes());
+        addPassthroughAttributeCTEs(ctx, baseName, inputBaseName, group.groupingAttributes(), Sql::attrTable);
         addAggregateCTEs(ctx, baseName, inputBaseName, group);
     }
 
@@ -37,7 +37,8 @@ class GroupRenderer {
             var r1Tbl = tableAlias(idTable(inputBaseName), "R1");
 
             var equalityConditions = groupingAttrs.stream()
-                .map(attr -> (Expression) groupEqualityExists(inputBaseName, attr, inputIdTbl, "R1"))
+                .map(attr -> (Expression) equalityExists(inputBaseName, attr, "a1", "a2",
+                    column(inputIdTbl, "id"), column("R1", "id")))
                 .toList();
 
             var subquery = new PlainSelect();
@@ -57,38 +58,23 @@ class GroupRenderer {
         }
     }
 
-    private Expression groupEqualityExists(String inputBaseName, String attr,
-                                            Table outerIdTable, String innerAlias) {
-        var a1 = tableAlias(attrTable(inputBaseName, attr), "a1");
-        var a2 = tableAlias(attrTable(inputBaseName, attr), "a2");
+    private Expression equalityExists(String inputBaseName, String attr,
+                                       String alias1, String alias2,
+                                       Expression outerId, Expression innerId) {
+        var t1 = tableAlias(attrTable(inputBaseName, attr), alias1);
+        var t2 = tableAlias(attrTable(inputBaseName, attr), alias2);
 
         var ps = new PlainSelect();
         ps.addSelectItem(new AllColumns());
-        ps.setFromItem(a1);
-        ps.addJoins(simpleJoin(a2));
+        ps.setFromItem(t1);
+        ps.addJoins(simpleJoin(t2));
         ps.setWhere(andAll(List.of(
-            new EqualsTo(column("a1", "id"), column(outerIdTable, "id")),
-            new EqualsTo(column("a2", "id"), column(innerAlias, "id")),
-            new EqualsTo(column("a1", "v"), column("a2", "v"))
+            new EqualsTo(column(alias1, "id"), outerId),
+            new EqualsTo(column(alias2, "id"), innerId),
+            new EqualsTo(column(alias1, "v"), column(alias2, "v"))
         )));
 
         return exists(ps);
-    }
-
-    private void addGroupingAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
-                                           List<String> groupingAttributes) {
-        for (var attr : groupingAttributes) {
-            var inputAttrTbl = table(attrTable(inputBaseName, attr));
-            var baseIdTbl = table(idTable(baseName));
-
-            var ps = new PlainSelect();
-            ps.addSelectItem(new AllTableColumns(inputAttrTbl));
-            ps.setFromItem(inputAttrTbl);
-            ps.addJoins(join(baseIdTbl,
-                new EqualsTo(column(baseIdTbl, "id"), column(inputAttrTbl, "id"))));
-
-            ctx.addCTE(attrTable(baseName, attr), ps.toString());
-        }
     }
 
     private void addAggregateCTEs(RenderContext ctx, String baseName, String inputBaseName, Group group) {
@@ -134,19 +120,15 @@ class GroupRenderer {
         joins.add(simpleJoin(inputIdTbl));
 
         var conditions = new ArrayList<Expression>();
-        if (hasCaseWhen) {
-            for (var col : columns) {
-                var attrTbl = table(attrTable(inputBaseName, col));
-                joins.add(leftJoin(attrTbl,
-                    new EqualsTo(column(attrTbl, "id"), column("input_id", "id"))));
-            }
-        } else {
-            for (var col : columns) {
-                var attrTbl = table(attrTable(inputBaseName, col));
-                joins.add(simpleJoin(attrTbl));
-                conditions.add(new EqualsTo(column(attrTbl, "id"), column("input_id", "id")));
-            }
-        }
+        addComputedExprAttributeJoins(
+            inputBaseName,
+            columns,
+            column("input_id", "id"),
+            hasCaseWhen,
+            Sql.NonCaseJoinMode.SIMPLE_JOIN_WITH_WHERE_ID,
+            joins,
+            conditions
+        );
         ps.setJoins(joins);
 
         Expression where = conditions.isEmpty()
@@ -155,7 +137,8 @@ class GroupRenderer {
 
         if (!groupingAttrs.isEmpty()) {
             var equalityConditions = groupingAttrs.stream()
-                .map(attr -> (Expression) aggEqualityExists(inputBaseName, attr, baseName))
+                .map(attr -> (Expression) equalityExists(inputBaseName, attr, "g1", "g2",
+                    column("input_id", "id"), column(idTable(baseName), "id")))
                 .toList();
             where = and(where, andAll(equalityConditions));
         }
@@ -173,23 +156,6 @@ class GroupRenderer {
         return ps;
     }
 
-    private Expression aggEqualityExists(String inputBaseName, String attr, String baseName) {
-        var g1 = tableAlias(attrTable(inputBaseName, attr), "g1");
-        var g2 = tableAlias(attrTable(inputBaseName, attr), "g2");
-
-        var ps = new PlainSelect();
-        ps.addSelectItem(new AllColumns());
-        ps.setFromItem(g1);
-        ps.addJoins(simpleJoin(g2));
-        ps.setWhere(andAll(List.of(
-            new EqualsTo(column("g1", "id"), column("input_id", "id")),
-            new EqualsTo(column("g2", "id"), column(idTable(baseName), "id")),
-            new EqualsTo(column("g1", "v"), column("g2", "v"))
-        )));
-
-        return exists(ps);
-    }
-
     private String renderCountAggregate(String baseName, String inputBaseName, IRExpression argument,
                                          List<String> columns, List<String> groupingAttrs) {
         boolean hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(argument);
@@ -202,19 +168,15 @@ class GroupRenderer {
         var joins = new ArrayList<Join>();
         var conditions = new ArrayList<Expression>();
 
-        if (hasCaseWhen) {
-            for (var col : columns) {
-                var attrTbl = table(attrTable(inputBaseName, col));
-                joins.add(leftJoin(attrTbl,
-                    new EqualsTo(column(attrTbl, "id"), column("input_id", "id"))));
-            }
-        } else {
-            for (var col : columns) {
-                var attrTbl = table(attrTable(inputBaseName, col));
-                joins.add(simpleJoin(attrTbl));
-                conditions.add(new EqualsTo(column(attrTbl, "id"), column("input_id", "id")));
-            }
-        }
+        addComputedExprAttributeJoins(
+            inputBaseName,
+            columns,
+            column("input_id", "id"),
+            hasCaseWhen,
+            Sql.NonCaseJoinMode.SIMPLE_JOIN_WITH_WHERE_ID,
+            joins,
+            conditions
+        );
 
         Expression subWhere = conditions.isEmpty()
             ? new BooleanValue(true)
@@ -222,7 +184,8 @@ class GroupRenderer {
 
         if (!groupingAttrs.isEmpty()) {
             var equalityConditions = groupingAttrs.stream()
-                .map(attr -> (Expression) aggEqualityExists(inputBaseName, attr, baseName))
+                .map(attr -> (Expression) equalityExists(inputBaseName, attr, "g1", "g2",
+                    column("input_id", "id"), column(idTable(baseName), "id")))
                 .toList();
             subWhere = and(subWhere, andAll(equalityConditions));
         } else if (!conditions.isEmpty()) {

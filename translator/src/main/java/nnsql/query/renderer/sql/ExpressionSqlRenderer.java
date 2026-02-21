@@ -52,18 +52,17 @@ final class ExpressionSqlRenderer {
         return switch (condition) {
             case Condition.Comparison(var left, var right, _) -> collectColumns(left, right);
             case Condition.IsNull(var attr, _) -> List.of(attr);
-            case Condition.And(var operands) ->
-                operands.stream()
-                    .flatMap(cond -> collectColumnsFromCondition(cond).stream())
-                    .distinct()
-                    .toList();
-            case Condition.Or(var operands) ->
-                operands.stream()
-                    .flatMap(cond -> collectColumnsFromCondition(cond).stream())
-                    .distinct()
-                    .toList();
+            case Condition.And(var operands) -> collectColumnsFromOperands(operands);
+            case Condition.Or(var operands) -> collectColumnsFromOperands(operands);
             case Condition.Not(var operand) -> collectColumnsFromCondition(operand);
         };
+    }
+
+    private static List<String> collectColumnsFromOperands(List<Condition> operands) {
+        return operands.stream()
+            .flatMap(cond -> collectColumnsFromCondition(cond).stream())
+            .distinct()
+            .toList();
     }
 
     static Expression toSqlCondition(Condition condition, String baseName) {

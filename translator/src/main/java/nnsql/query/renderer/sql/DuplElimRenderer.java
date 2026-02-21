@@ -3,7 +3,6 @@ package nnsql.query.renderer.sql;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
 import net.sf.jsqlparser.statement.select.AllColumns;
-import net.sf.jsqlparser.statement.select.AllTableColumns;
 import net.sf.jsqlparser.statement.select.PlainSelect;
 
 import nnsql.query.ir.DuplElim;
@@ -17,7 +16,7 @@ class DuplElimRenderer {
 
     void render(DuplElim duplElim, RenderContext ctx, String baseName, String inputBaseName) {
         addIdCTE(ctx, baseName, inputBaseName, duplElim);
-        addAttributeCTEs(ctx, baseName, inputBaseName, duplElim.attributes());
+        addPassthroughAttributeCTEs(ctx, baseName, inputBaseName, duplElim.attributes(), Sql::attrCTE);
     }
 
     private void addIdCTE(RenderContext ctx, String baseName, String inputBaseName, DuplElim duplElim) {
@@ -45,23 +44,6 @@ class DuplElimRenderer {
         ps.setWhere(notExists(subquery));
 
         ctx.addCTE(idTable(baseName), ps.toString());
-    }
-
-    private void addAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
-                                   List<String> attributes) {
-        attributes.forEach(attr -> {
-            var inputAttrCTEName = attrCTE(inputBaseName, attr);
-            var inputAttrTbl = table(inputAttrCTEName);
-            var baseIdTbl = table(idTable(baseName));
-
-            var ps = new PlainSelect();
-            ps.addSelectItem(new AllTableColumns(inputAttrTbl));
-            ps.setFromItem(inputAttrTbl);
-            ps.addJoins(join(baseIdTbl,
-                new EqualsTo(column(baseIdTbl, "id"), column(inputAttrTbl, "id"))));
-
-            ctx.addCTE(attrCTE(baseName, attr), ps.toString());
-        });
     }
 
     private Expression generateEqualityCondition(String relationName, String attr) {

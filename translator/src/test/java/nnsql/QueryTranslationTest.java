@@ -746,6 +746,14 @@ class QueryTranslationTest {
         ));
         assertFalse(castSql.contains("LEFT JOIN"),
             "Non-CASE Cast should use INNER JOIN, not LEFT JOIN");
+
+        var computedWhereSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.A + R.B > 5"
+        ));
+        assertTrue(computedWhereSql.contains("WHERE EXISTS (SELECT * FROM"));
+        assertTrue(computedWhereSql.contains("product_0_R_A.v + product_0_R_B.v > 5.0"));
+        assertFalse(computedWhereSql.contains("LEFT JOIN"),
+            "Non-CASE computed predicate should use INNER/simple joins, not LEFT JOIN");
     }
 
     @Test

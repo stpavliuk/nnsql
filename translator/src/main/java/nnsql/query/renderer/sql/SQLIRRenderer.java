@@ -204,9 +204,7 @@ public class SQLIRRenderer implements IRRenderer {
 
     private Return findReturnNode(IRNode node) {
         return switch (node) {
-            case Return r -> r;
-            case Sort s -> findReturnNode(s.input());
-            case DuplElim d -> findReturnNode(d.input());
+            case Return _, Sort _, DuplElim _ -> IRNodeTraversal.findReturnNode(node);
             default -> null;
         };
     }
