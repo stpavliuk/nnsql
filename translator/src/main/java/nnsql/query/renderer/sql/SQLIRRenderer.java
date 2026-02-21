@@ -1,13 +1,18 @@
 package nnsql.query.renderer.sql;
 
 import net.sf.jsqlparser.expression.Alias;
+import net.sf.jsqlparser.expression.LongValue;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.statement.select.AllColumns;
+import net.sf.jsqlparser.statement.select.Limit;
+import net.sf.jsqlparser.statement.select.OrderByElement;
 import net.sf.jsqlparser.statement.select.PlainSelect;
 
 import nnsql.query.ir.*;
 import nnsql.query.renderer.*;
 
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.stream.Collectors;
 
 import static nnsql.query.renderer.sql.Sql.attrCTE;
@@ -102,6 +107,8 @@ public class SQLIRRenderer implements IRRenderer {
 
             case DuplElim d -> renderWithInput("duplelim_", d.input(), ctx,
                 (c, b, i) -> duplElimRenderer.render(d, c, b, i));
+
+            case Sort s -> renderNode(s.input(), ctx);
         };
     }
 
@@ -135,15 +142,24 @@ public class SQLIRRenderer implements IRRenderer {
 
     private String buildFinalSelect(IRNode ir, String baseName) {
         var returnNode = findReturnNode(ir);
+        var sortNode = findSortNode(ir);
 
-        if (returnNode == null || returnNode.selectStar() || returnNode.selectedAttributes().isEmpty()) {
-            return "SELECT * FROM " + baseName + "_id;";
-        }
+        var finalSelect = returnNode == null || returnNode.selectStar() || returnNode.selectedAttributes().isEmpty()
+            ? buildSelectStar(baseName)
+            : buildProjectionSelect(baseName, returnNode.selectedAttributes());
 
-        return buildProjectionSelect(baseName, returnNode.selectedAttributes());
+        applySortAndLimit(finalSelect, baseName, sortNode);
+        return finalSelect + ";";
     }
 
-    private String buildProjectionSelect(String baseName, java.util.List<Return.AttributeRef> attrs) {
+    private PlainSelect buildSelectStar(String baseName) {
+        var ps = new PlainSelect();
+        ps.addSelectItem(new AllColumns());
+        ps.setFromItem(table(idTable(baseName)));
+        return ps;
+    }
+
+    private PlainSelect buildProjectionSelect(String baseName, List<Return.AttributeRef> attrs) {
         var baseIdTbl = table(idTable(baseName));
 
         var ps = new PlainSelect();
@@ -158,14 +174,52 @@ public class SQLIRRenderer implements IRRenderer {
                 new EqualsTo(column(baseIdTbl, "id"), column(attrTbl, "id"))));
         }
 
-        return ps + ";";
+        return ps;
+    }
+
+    private void applySortAndLimit(PlainSelect ps, String baseName, Sort sortNode) {
+        if (sortNode == null) {
+            return;
+        }
+
+        if (!sortNode.keys().isEmpty()) {
+            var orderByElements = sortNode.keys().stream()
+                .map(key -> {
+                    var element = new OrderByElement();
+                    element.setExpression(column(attrCTE(baseName, key.attribute()), "v"));
+                    element.setAsc(!key.descending());
+                    element.setAscDescPresent(true);
+                    return element;
+                })
+                .toList();
+            ps.setOrderByElements(orderByElements);
+        }
+
+        if (sortNode.limit() != null) {
+            var limit = new Limit();
+            limit.setRowCount(new LongValue(sortNode.limit()));
+            ps.setLimit(limit);
+        }
     }
 
     private Return findReturnNode(IRNode node) {
         return switch (node) {
             case Return r -> r;
+            case Sort s -> findReturnNode(s.input());
             case DuplElim d -> findReturnNode(d.input());
             default -> null;
+        };
+    }
+
+    private Sort findSortNode(IRNode node) {
+        return switch (node) {
+            case Sort s -> s;
+            case DuplElim d -> findSortNode(d.input());
+            case Return r -> findSortNode(r.input());
+            case AggFilter af -> findSortNode(af.input());
+            case Group g -> findSortNode(g.input());
+            case Filter f -> findSortNode(f.input());
+            case Product _ -> null;
         };
     }
 

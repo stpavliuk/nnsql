@@ -815,6 +815,45 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testOrderByAndLimit() {
+        var orderedSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R ORDER BY R.A LIMIT 10"
+        ));
+        assertTrue(orderedSql.contains("ORDER BY return_1_attr_R_A.v ASC"));
+        assertTrue(orderedSql.contains("LIMIT 10"));
+
+        var multiOrderedSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A, R.B FROM R ORDER BY R.A ASC, R.B DESC LIMIT 5"
+        ));
+        assertTrue(multiOrderedSql.contains("ORDER BY return_1_attr_R_A.v ASC, return_1_attr_R_B.v DESC"));
+        assertTrue(multiOrderedSql.contains("LIMIT 5"));
+
+        var aliasOrderedSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A, SUM(R.B) AS total FROM R GROUP BY R.A ORDER BY total DESC LIMIT 3"
+        ));
+        assertTrue(aliasOrderedSql.contains("ORDER BY return_2_attr_total.v DESC"));
+        assertTrue(aliasOrderedSql.contains("LIMIT 3"));
+
+        var ordinalOrderedSql = normalizeWhitespace(translator.translate(
+            "SELECT DISTINCT R.A FROM R ORDER BY 1 LIMIT 10"
+        ));
+        assertTrue(ordinalOrderedSql.contains("ORDER BY duplelim_2_attr_R_A.v ASC"));
+        assertTrue(ordinalOrderedSql.contains("LIMIT 10"));
+
+        var limitOnlySql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R LIMIT 5"
+        ));
+        assertFalse(limitOnlySql.contains(" ORDER BY "));
+        assertTrue(limitOnlySql.contains("LIMIT 5"));
+    }
+
+    @Test
+    void testUnsupportedOrderByExpressions() {
+        assertThrows(UnsupportedOperationException.class, () ->
+            translator.translate("SELECT R.A FROM R ORDER BY R.A + R.B"));
+    }
+
+    @Test
     void testChainedCTEs() {
         assertQueryTranslation(
             // language=sql

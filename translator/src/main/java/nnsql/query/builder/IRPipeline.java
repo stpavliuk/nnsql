@@ -63,6 +63,13 @@ public record IRPipeline(Option<IRNode> current, AtomicInteger nodeIdCounter) {
         };
     }
 
+    public IRPipeline sort(List<Sort.SortKey> keys, Integer limit) {
+        return switch (current) {
+            case Some(IRNode node) -> withCurrent(new Sort(node, keys, limit));
+            case None() -> throw new IllegalStateException("Cannot apply ORDER BY/LIMIT without a source");
+        };
+    }
+
     public IRNode build() {
         return switch (current) {
             case Some(IRNode node) -> node;

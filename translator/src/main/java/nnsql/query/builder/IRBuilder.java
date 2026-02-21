@@ -38,16 +38,16 @@ public class IRBuilder {
             for (var withItem : select.getWithItemsList()) {
                 var cteName = withItem.getAliasName();
                 var cteBody = (PlainSelect) withItem.getSelect().getSelect();
-                var cteIR = buildSelect(cteBody);
+                var cteIR = buildSelect(cteBody, false);
                 var attributes = AttributeResolver.collectFrom(cteIR);
                 cteDefinitions.put(cteName, new Relation.Subquery(cteName, cteIR, attributes));
             }
         }
 
-        return buildSelect(select);
+        return buildSelect(select, true);
     }
 
-    private IRNode buildSelect(PlainSelect select) {
+    private IRNode buildSelect(PlainSelect select, boolean topLevel) {
         var pipeline = IRPipeline.start();
 
         var relations = extractRelations(select);
@@ -83,6 +83,18 @@ public class IRBuilder {
         if (select.getDistinct() != null) {
             var attributes = AttributeResolver.collectFrom(pipeline.build());
             pipeline = pipeline.duplElim(attributes);
+        }
+
+        if (topLevel) {
+            var sortKeys = parseSortKeys(select, pipeline);
+            var limit = parseLimit(select);
+            if (!sortKeys.isEmpty() || limit != null) {
+                pipeline = pipeline.sort(sortKeys, limit);
+            }
+        } else if ((select.getOrderByElements() != null && !select.getOrderByElements().isEmpty())
+            || select.getLimit() != null) {
+            throw new UnsupportedOperationException(
+                "ORDER BY/LIMIT in subqueries or CTEs is not supported");
         }
 
         return pipeline.build();
@@ -126,7 +138,7 @@ public class IRBuilder {
                 var alias = ps.getAlias() != null
                     ? ps.getAlias().getName()
                     : "subq" + nodeIdCounter.getAndIncrement();
-                var subqueryIR = buildSelect((PlainSelect) ps.getSelect());
+                var subqueryIR = buildSelect((PlainSelect) ps.getSelect(), false);
                 var attributes = AttributeResolver.collectFrom(subqueryIR);
                 yield new Relation.Subquery(alias, subqueryIR, attributes);
             }
@@ -208,7 +220,7 @@ public class IRBuilder {
     }
 
     private IRExpression.ScalarSubquery toScalarSubquery(ParenthesedSelect ps) {
-        var subqueryIR = buildSelect((PlainSelect) ps.getSelect());
+        var subqueryIR = buildSelect((PlainSelect) ps.getSelect(), false);
         var pipeline = new ArrayList<IRNode>();
         pipeline.addFirst(subqueryIR);
         return new IRExpression.ScalarSubquery(pipeline);
@@ -457,6 +469,85 @@ public class IRBuilder {
             .toList());
 
         return pipeline.group(groupingAttributes, aggregates, outputAttributes);
+    }
+
+    private List<Sort.SortKey> parseSortKeys(PlainSelect select, IRPipeline pipeline) {
+        var orderByElements = select.getOrderByElements();
+        if (orderByElements == null || orderByElements.isEmpty()) {
+            return List.of();
+        }
+
+        if (isSelectStarOutput(pipeline.build())) {
+            throw new UnsupportedOperationException("ORDER BY is not supported with SELECT *");
+        }
+
+        var availableAttrs = AttributeResolver.collectFrom(pipeline.build());
+        return orderByElements.stream()
+            .map(orderBy -> toSortKey(orderBy, availableAttrs))
+            .toList();
+    }
+
+    private Sort.SortKey toSortKey(OrderByElement orderBy, List<String> availableAttrs) {
+        if (orderBy.getNullOrdering() != null) {
+            throw new UnsupportedOperationException("ORDER BY NULLS FIRST/LAST is not supported");
+        }
+
+        var sortAttribute = switch (orderBy.getExpression()) {
+            case Column col -> AttributeResolver.resolve(toColumnRef(col).columnName(), availableAttrs);
+            case LongValue ordinal -> resolveSortOrdinal(ordinal, availableAttrs);
+            default -> throw new UnsupportedOperationException(
+                "ORDER BY supports column references, aliases, and ordinals only");
+        };
+
+        var descending = orderBy.isAscDescPresent() && !orderBy.isAsc();
+        return new Sort.SortKey(sortAttribute, descending);
+    }
+
+    private String resolveSortOrdinal(LongValue ordinalExpr, List<String> availableAttrs) {
+        var ordinal = Math.toIntExact(ordinalExpr.getValue());
+        if (ordinal < 1 || ordinal > availableAttrs.size()) {
+            throw new IllegalArgumentException(
+                "ORDER BY position %d is out of range for %d select items"
+                    .formatted(ordinal, availableAttrs.size()));
+        }
+        return availableAttrs.get(ordinal - 1);
+    }
+
+    private Integer parseLimit(PlainSelect select) {
+        var limit = select.getLimit();
+        if (limit == null) {
+            return null;
+        }
+
+        if (limit.getOffset() != null) {
+            throw new UnsupportedOperationException("LIMIT with OFFSET is not supported");
+        }
+
+        var rowCount = limit.getRowCount();
+        if (rowCount == null) {
+            throw new UnsupportedOperationException("LIMIT requires an integer row count");
+        }
+
+        return switch (rowCount) {
+            case LongValue lv -> {
+                var value = Math.toIntExact(lv.getValue());
+                if (value < 0) {
+                    throw new IllegalArgumentException("LIMIT must be non-negative");
+                }
+                yield value;
+            }
+            default -> throw new UnsupportedOperationException(
+                "LIMIT supports integer literals only");
+        };
+    }
+
+    private boolean isSelectStarOutput(IRNode node) {
+        return switch (node) {
+            case Return ret -> ret.selectStar();
+            case DuplElim de -> isSelectStarOutput(de.input());
+            case Sort sort -> isSelectStarOutput(sort.input());
+            default -> false;
+        };
     }
 
     private IRExpression qualifyAggregateArgument(

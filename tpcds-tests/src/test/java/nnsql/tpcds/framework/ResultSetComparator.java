@@ -14,6 +14,15 @@ public class ResultSetComparator {
         List<List<Object>> actual,
         String queryName
     ) {
+        assertResultsMatch(expected, actual, queryName, false);
+    }
+
+    public static void assertResultsMatch(
+        List<List<Object>> expected,
+        List<List<Object>> actual,
+        String queryName,
+        boolean orderSensitive
+    ) {
         assertEquals(expected.size(), actual.size(),
             "%s: row count mismatch (expected %d, got %d)".formatted(queryName, expected.size(), actual.size()));
 
@@ -22,12 +31,12 @@ public class ResultSetComparator {
         assertEquals(expected.getFirst().size(), actual.getFirst().size(),
             "%s: column count mismatch".formatted(queryName));
 
-        var sortedExpected = sortRows(expected);
-        var sortedActual = sortRows(actual);
+        var comparedExpected = orderSensitive ? expected : sortRows(expected);
+        var comparedActual = orderSensitive ? actual : sortRows(actual);
 
-        for (int i = 0; i < sortedExpected.size(); i++) {
-            var expRow = sortedExpected.get(i);
-            var actRow = sortedActual.get(i);
+        for (int i = 0; i < comparedExpected.size(); i++) {
+            var expRow = comparedExpected.get(i);
+            var actRow = comparedActual.get(i);
             for (int j = 0; j < expRow.size(); j++) {
                 assertTrue(valuesEqual(expRow.get(j), actRow.get(j)),
                     "%s: mismatch at row %d, col %d: expected <%s> but got <%s>"

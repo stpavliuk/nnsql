@@ -23,7 +23,7 @@ class TpcdsQueryTest {
 
                 var expected = env.source().execute(q.sql());
                 var actual = env.target().execute(translated);
-                ResultSetComparator.assertResultsMatch(expected, actual, q.name());
+                ResultSetComparator.assertResultsMatch(expected, actual, q.name(), q.orderSensitive());
             })
         );
     }

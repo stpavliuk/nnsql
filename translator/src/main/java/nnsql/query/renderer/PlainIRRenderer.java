@@ -20,6 +20,7 @@ public class PlainIRRenderer implements IRRenderer {
             case AggFilter af -> af.input();
             case Return r -> r.input();
             case DuplElim d -> d.input();
+            case Sort s -> s.input();
         };
 
         if (inputNode != null) {

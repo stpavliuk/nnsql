@@ -8,5 +8,5 @@ public interface BenchmarkDataProvider {
     void generate(Connection conn) throws SQLException;
     List<BenchmarkQuery> queries(Connection conn) throws SQLException;
 
-    record BenchmarkQuery(String name, String sql) {}
+    record BenchmarkQuery(String name, String sql, boolean orderSensitive) {}
 }

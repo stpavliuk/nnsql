@@ -78,6 +78,7 @@ public class AttributeResolver {
                 ret.selectedAttributes().stream().map(AttributeRef::alias).toList();
             case Return ret -> collectFrom(ret.input());
             case DuplElim de -> de.attributes();
+            case Sort sort -> collectFrom(sort.input());
             case AggFilter af -> af.attributes();
             case Group g -> g.outputAttributes();
             case Filter f -> f.attributes();

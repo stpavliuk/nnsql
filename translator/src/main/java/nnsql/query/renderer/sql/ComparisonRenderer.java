@@ -307,6 +307,7 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
     private Return findReturnNode(IRNode node) {
         return switch (node) {
             case Return r -> r;
+            case Sort s -> findReturnNode(s.input());
             case DuplElim d -> findReturnNode(d.input());
             case AggFilter af -> findReturnNode(af.input());
             case Group g -> findReturnNode(g.input());

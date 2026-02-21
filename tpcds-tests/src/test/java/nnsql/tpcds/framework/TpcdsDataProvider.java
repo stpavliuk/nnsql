@@ -33,9 +33,13 @@ public class TpcdsDataProvider implements BenchmarkDataProvider {
                     continue;
                 }
                 var sql = rs.getString("query");
-                var cleaned = stripOrderByAndLimit(sql);
+                var cleaned = normalizeQuerySql(sql);
                 if (cleaned != null) {
-                    queries.add(new BenchmarkQuery("Q" + queryNr, cleaned));
+                    queries.add(new BenchmarkQuery(
+                        "Q" + queryNr,
+                        cleaned,
+                        hasOuterOrderBy(cleaned)
+                    ));
                 }
             }
         }
@@ -66,25 +70,19 @@ public class TpcdsDataProvider implements BenchmarkDataProvider {
         return result;
     }
 
-    static String stripOrderByAndLimit(String sql) {
+    static String normalizeQuerySql(String sql) {
         if (sql == null || sql.isBlank()) return null;
         var cleaned = sql.strip();
         if (cleaned.endsWith(";")) cleaned = cleaned.substring(0, cleaned.length() - 1).strip();
-
-        int outerOrderBy = findOuterKeyword(cleaned, "ORDER BY");
-        if (outerOrderBy >= 0) {
-            cleaned = cleaned.substring(0, outerOrderBy).strip();
-        }
-
-        int outerLimit = findOuterKeyword(cleaned, "LIMIT");
-        if (outerLimit >= 0) {
-            cleaned = cleaned.substring(0, outerLimit).strip();
-        }
-
         return cleaned;
     }
 
-    private static int findOuterKeyword(String sql, String keyword) {
+    static boolean hasOuterOrderBy(String sql) {
+        if (sql == null || sql.isBlank()) return false;
+        return findOuterKeyword(sql, "ORDER BY") >= 0;
+    }
+
+    static int findOuterKeyword(String sql, String keyword) {
         int depth = 0;
         var upper = sql.toUpperCase();
         var kw = keyword.toUpperCase();
