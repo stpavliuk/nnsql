@@ -47,6 +47,18 @@ public class AttributeResolver {
                     qualifyExpression(right, availableAttrs));
             case IRExpression.Cast(var inner, var targetType) ->
                 new IRExpression.Cast(qualifyExpression(inner, availableAttrs), targetType);
+            case IRExpression.CaseWhen(var whens, var elseExpr) -> {
+                var qualifiedWhens = whens.stream()
+                    .map(when -> new IRExpression.WhenClause(
+                        qualifyCondition(when.condition(), availableAttrs),
+                        qualifyExpression(when.result(), availableAttrs)
+                    ))
+                    .toList();
+                var qualifiedElse = elseExpr != null
+                    ? qualifyExpression(elseExpr, availableAttrs)
+                    : null;
+                yield new IRExpression.CaseWhen(qualifiedWhens, qualifiedElse);
+            }
             case IRExpression.Literal _,
                  IRExpression.Aggregate _,
                  IRExpression.ScalarSubquery _ -> expr;

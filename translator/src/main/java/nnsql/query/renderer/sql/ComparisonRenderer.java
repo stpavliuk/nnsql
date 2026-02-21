@@ -37,6 +37,9 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.Cast cast ->
                 renderWithComputedExpr(cast, comp.right(), comp.operator(), rel, negate);
 
+            case IRExpression.CaseWhen caseWhen ->
+                renderWithComputedExpr(caseWhen, comp.right(), comp.operator(), rel, negate);
+
             case IRExpression.ScalarSubquery _ ->
                 throw unsupported("Scalar subquery on left side of comparison");
 
@@ -76,6 +79,12 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
                 yield existsExprToExpr(rel, leftExpr, cast, op, allCols, negate);
             }
 
+            case IRExpression.CaseWhen caseWhen -> {
+                var leftExpr = new IRExpression.ColumnRef(col);
+                var allCols = ExpressionSqlRenderer.collectColumns(leftExpr, caseWhen);
+                yield existsExprToExpr(rel, leftExpr, caseWhen, op, allCols, negate);
+            }
+
             case IRExpression.Aggregate _ ->
                 throw unsupported(right.getClass().getSimpleName());
         };
@@ -107,6 +116,11 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
                 yield existsExprToExpr(rel, lit, cast, op, rightCols, negate);
             }
 
+            case IRExpression.CaseWhen caseWhen -> {
+                var rightCols = ExpressionSqlRenderer.collectColumns(caseWhen);
+                yield existsExprToExpr(rel, lit, caseWhen, op, rightCols, negate);
+            }
+
             case IRExpression.Aggregate _ ->
                 throw unsupported(right.getClass().getSimpleName());
         };
@@ -115,6 +129,9 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
     private Expression existsExprToExpr(String rel, IRExpression left, IRExpression right,
                                          String op, List<String> columns, boolean negate) {
         Table idTbl = table(idTable(rel));
+
+        boolean hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(left)
+            || ExpressionSqlRenderer.containsCaseWhen(right);
 
         Expression comp = comparison(
             ExpressionSqlRenderer.toSqlExpr(left, rel),
@@ -130,29 +147,48 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         var ps = new PlainSelect();
         ps.addSelectItem(new AllColumns());
 
-        var firstCol = columns.getFirst();
-        Table firstTable = table(attrTable(rel, firstCol));
-        ps.setFromItem(firstTable);
+        if (hasCaseWhen) {
+            Table cwIdTbl = tableAlias(idTable(rel), "cw_id");
+            ps.setFromItem(cwIdTbl);
 
-        var joins = new ArrayList<Join>();
-        var conditions = new ArrayList<Expression>();
-        conditions.add(new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
-            column(firstTable, "id"), column(idTbl, "id")));
-
-        for (int i = 1; i < columns.size(); i++) {
-            var col = columns.get(i);
-            Table attrTbl = table(attrTable(rel, col));
-            joins.add(simpleJoin(attrTbl));
-            conditions.add(new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
-                column(attrTbl, "id"), column(idTbl, "id")));
-        }
-
-        if (!joins.isEmpty()) {
+            var joins = new ArrayList<Join>();
+            for (var col : columns) {
+                Table attrTbl = table(attrTable(rel, col));
+                joins.add(leftJoin(attrTbl,
+                    new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                        column(attrTbl, "id"), column("cw_id", "id"))));
+            }
             ps.setJoins(joins);
-        }
 
-        conditions.add(comp);
-        ps.setWhere(andAll(conditions));
+            ps.setWhere(and(
+                new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                    column("cw_id", "id"), column(idTbl, "id")),
+                comp));
+        } else {
+            var firstCol = columns.getFirst();
+            Table firstTable = table(attrTable(rel, firstCol));
+            ps.setFromItem(firstTable);
+
+            var joins = new ArrayList<Join>();
+            var conditions = new ArrayList<Expression>();
+            conditions.add(new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                column(firstTable, "id"), column(idTbl, "id")));
+
+            for (int i = 1; i < columns.size(); i++) {
+                var col = columns.get(i);
+                Table attrTbl = table(attrTable(rel, col));
+                joins.add(simpleJoin(attrTbl));
+                conditions.add(new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                    column(attrTbl, "id"), column(idTbl, "id")));
+            }
+
+            if (!joins.isEmpty()) {
+                ps.setJoins(joins);
+            }
+
+            conditions.add(comp);
+            ps.setWhere(andAll(conditions));
+        }
 
         return exists(ps);
     }

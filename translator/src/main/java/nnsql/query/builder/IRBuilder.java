@@ -143,6 +143,30 @@ public class IRBuilder {
             case StringValue sv -> IRExpression.string(sv.getValue());
             case NullValue _ -> IRExpression.nullValue();
             case Function fn when isAggregate(fn) -> toAggregate(fn, null);
+            case CaseExpression caseExpr -> {
+                var switchExpr = caseExpr.getSwitchExpression();
+                var whens = caseExpr.getWhenClauses().stream()
+                    .map(whenClause -> {
+                        Condition condition;
+                        if (switchExpr != null) {
+                            condition = Condition.eq(
+                                toExpression(switchExpr),
+                                toExpression(whenClause.getWhenExpression())
+                            );
+                        } else {
+                            condition = toCondition(whenClause.getWhenExpression());
+                        }
+                        return new IRExpression.WhenClause(
+                            condition,
+                            toExpression(whenClause.getThenExpression())
+                        );
+                    })
+                    .toList();
+                var elseExpr = caseExpr.getElseExpression() != null
+                    ? toExpression(caseExpr.getElseExpression())
+                    : null;
+                yield new IRExpression.CaseWhen(whens, elseExpr);
+            }
             case ParenthesedExpressionList<?> p -> toExpression(p.getFirst());
             case ParenthesedSelect ps -> toScalarSubquery(ps);
             case Addition add -> new IRExpression.BinaryOp(
@@ -311,7 +335,7 @@ public class IRBuilder {
                 var alias = item.getAlias() != null ? item.getAlias().getName() : colName;
                 yield AttributeRef.attr(resolvedName, alias);
             }
-            case IRExpression.BinaryOp _, IRExpression.Cast _ -> {
+            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _ -> {
                 if (item.getAlias() == null) {
                     throw new IllegalArgumentException("Computed expressions require an alias");
                 }
@@ -359,7 +383,7 @@ public class IRBuilder {
                             : colName;
                         selectedAttrs.add(AttributeRef.attr(resolvedName, alias));
                     }
-                    case IRExpression.BinaryOp _, IRExpression.Cast _ -> {
+                    case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _ -> {
                         if (selectItem.getAlias() == null) {
                             throw new IllegalArgumentException("Computed expressions require an alias");
                         }
@@ -454,6 +478,18 @@ public class IRBuilder {
                     qualifyAggregateArgument(inner, availableAttrs),
                     targetType
                 );
+            case IRExpression.CaseWhen(var whens, var elseExpr) -> {
+                var qualifiedWhens = whens.stream()
+                    .map(when -> new IRExpression.WhenClause(
+                        AttributeResolver.qualifyCondition(when.condition(), availableAttrs),
+                        qualifyAggregateArgument(when.result(), availableAttrs)
+                    ))
+                    .toList();
+                var qualifiedElse = elseExpr != null
+                    ? qualifyAggregateArgument(elseExpr, availableAttrs)
+                    : null;
+                yield new IRExpression.CaseWhen(qualifiedWhens, qualifiedElse);
+            }
         };
     }
 }

@@ -677,6 +677,100 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testCaseWhenExpressions() {
+        var searchedCaseSql = normalizeWhitespace(translator.translate(
+            "SELECT CASE WHEN R.A > 10 THEN 'high' ELSE 'low' END AS category FROM R"
+        ));
+        assertTrue(searchedCaseSql.contains("return_1_attr_category"));
+        assertTrue(searchedCaseSql.contains("CASE WHEN product_0_R_A.v > 10.0 THEN 'high' ELSE 'low' END"));
+        assertTrue(searchedCaseSql.contains("LEFT JOIN product_0_R_A"));
+        assertTrue(searchedCaseSql.contains("IS NOT NULL"));
+
+        var simpleCaseSql = normalizeWhitespace(translator.translate(
+            "SELECT CASE R.B WHEN 1 THEN 'one' WHEN 2 THEN 'two' END AS label FROM R"
+        ));
+        assertTrue(simpleCaseSql.contains("return_1_attr_label"));
+        assertTrue(simpleCaseSql.contains("product_0_R_B.v = 1.0"));
+        assertTrue(simpleCaseSql.contains("product_0_R_B.v = 2.0"));
+        assertTrue(simpleCaseSql.contains("LEFT JOIN product_0_R_B"));
+
+        var caseInAggregateSql = normalizeWhitespace(translator.translate(
+            "SELECT SUM(CASE WHEN R.A > 0 THEN R.B ELSE 0 END) AS total FROM R"
+        ));
+        assertTrue(caseInAggregateSql.contains("SUM(CASE WHEN"));
+        assertTrue(caseInAggregateSql.contains("product_0_R_A.v > 0.0"));
+        assertTrue(caseInAggregateSql.contains("THEN product_0_R_B.v ELSE 0.0 END"));
+        assertTrue(caseInAggregateSql.contains("LEFT JOIN product_0_R_A"));
+        assertTrue(caseInAggregateSql.contains("LEFT JOIN product_0_R_B"));
+
+        var nestedCaseSql = normalizeWhitespace(translator.translate(
+            "SELECT CASE WHEN R.A > 10 THEN CASE WHEN R.B > 5 THEN 'both' ELSE 'a' END ELSE 'none' END AS nested FROM R"
+        ));
+        assertTrue(nestedCaseSql.contains("return_1_attr_nested"));
+        assertTrue(nestedCaseSql.contains(
+            "CASE WHEN product_0_R_A.v > 10.0 THEN CASE WHEN product_0_R_B.v > 5.0 THEN 'both' ELSE 'a' END ELSE 'none' END"
+        ));
+        assertTrue(nestedCaseSql.contains("LEFT JOIN product_0_R_A"));
+        assertTrue(nestedCaseSql.contains("LEFT JOIN product_0_R_B"));
+
+        var caseInWhereSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE CASE WHEN R.B > 0 THEN R.A ELSE 0 END > 5"
+        ));
+        assertTrue(caseInWhereSql.contains("WHERE EXISTS (SELECT * FROM"));
+        assertTrue(caseInWhereSql.contains(
+            "CASE WHEN product_0_R_B.v > 0.0 THEN product_0_R_A.v ELSE 0.0 END > 5.0"
+        ));
+        assertTrue(caseInWhereSql.contains("cw_id"));
+        assertTrue(caseInWhereSql.contains("LEFT JOIN product_0_R_A"));
+        assertTrue(caseInWhereSql.contains("LEFT JOIN product_0_R_B"));
+    }
+
+    @Test
+    void testCaseWhenNullHandling() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT CASE WHEN R.A > 10 THEN R.B ELSE 0 END AS result FROM R"
+        ));
+        assertTrue(sql.contains("return_1_attr_result"));
+        assertTrue(sql.contains("LEFT JOIN product_0_R_A"));
+        assertTrue(sql.contains("LEFT JOIN product_0_R_B"));
+        assertTrue(sql.contains("IS NOT NULL"));
+
+        var addSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A + R.B AS total FROM R"
+        ));
+        assertFalse(addSql.contains("LEFT JOIN"),
+            "Non-CASE BinaryOp should use INNER JOIN, not LEFT JOIN");
+
+        var castSql = normalizeWhitespace(translator.translate(
+            "SELECT CAST(R.A AS INTEGER) AS a_int FROM R"
+        ));
+        assertFalse(castSql.contains("LEFT JOIN"),
+            "Non-CASE Cast should use INNER JOIN, not LEFT JOIN");
+    }
+
+    @Test
+    void testCaseWhenAggregateNullByAbsence() {
+        var sumSql = normalizeWhitespace(translator.translate(
+            "SELECT SUM(CASE WHEN R.A > 10 THEN R.B END) AS sum_b FROM R"
+        ));
+        assertTrue(sumSql.contains("group_1_sum_b"));
+        assertTrue(sumSql.contains("SUM(CASE WHEN product_0_R_A.v > 10.0 THEN product_0_R_B.v END)"));
+        assertTrue(sumSql.contains("CASE WHEN product_0_R_A.v > 10.0 THEN product_0_R_B.v END IS NOT NULL"));
+
+        var groupedSumSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A, SUM(CASE WHEN R.B > 0 THEN R.B END) AS sum_b FROM R GROUP BY R.A"
+        ));
+        assertTrue(groupedSumSql.contains("group_1_sum_b"));
+        assertTrue(groupedSumSql.contains("CASE WHEN product_0_R_B.v > 0.0 THEN product_0_R_B.v END IS NOT NULL"));
+
+        var countSql = normalizeWhitespace(translator.translate(
+            "SELECT COUNT(CASE WHEN R.A > 10 THEN R.B END) AS cnt FROM R"
+        ));
+        assertTrue(countSql.contains("COUNT(CASE WHEN product_0_R_A.v > 10.0 THEN product_0_R_B.v END)"));
+        assertFalse(countSql.contains("CASE WHEN product_0_R_A.v > 10.0 THEN product_0_R_B.v END IS NOT NULL"));
+    }
+
+    @Test
     void testArithmeticInAggregates() {
         var sumMulSql = normalizeWhitespace(translator.translate(
             "SELECT SUM(R.A * R.B) AS revenue FROM R"

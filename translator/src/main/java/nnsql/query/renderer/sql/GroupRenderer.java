@@ -2,6 +2,7 @@ package nnsql.query.renderer.sql;
 
 import net.sf.jsqlparser.expression.*;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
 import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.select.*;
 
@@ -115,13 +116,16 @@ class GroupRenderer {
     private PlainSelect buildAggregateSelect(String baseName, String inputBaseName, IRExpression argument,
                                               List<String> columns, String functionName,
                                               List<String> groupingAttrs) {
+        boolean hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(argument);
+
         var baseIdTbl = table(idTable(baseName));
         var inputIdTbl = tableAlias(idTable(inputBaseName), "input_id");
 
         var ps = new PlainSelect();
         ps.addSelectItem(column(baseIdTbl, "id"));
+        var argumentExpr = ExpressionSqlRenderer.toSqlExpr(argument, inputBaseName);
         ps.addSelectItem(
-            fn(functionName, ExpressionSqlRenderer.toSqlExpr(argument, inputBaseName)),
+            fn(functionName, argumentExpr),
             new Alias("v", true)
         );
         ps.setFromItem(baseIdTbl);
@@ -130,10 +134,18 @@ class GroupRenderer {
         joins.add(simpleJoin(inputIdTbl));
 
         var conditions = new ArrayList<Expression>();
-        for (var col : columns) {
-            var attrTbl = table(attrTable(inputBaseName, col));
-            joins.add(simpleJoin(attrTbl));
-            conditions.add(new EqualsTo(column(attrTbl, "id"), column("input_id", "id")));
+        if (hasCaseWhen) {
+            for (var col : columns) {
+                var attrTbl = table(attrTable(inputBaseName, col));
+                joins.add(leftJoin(attrTbl,
+                    new EqualsTo(column(attrTbl, "id"), column("input_id", "id"))));
+            }
+        } else {
+            for (var col : columns) {
+                var attrTbl = table(attrTable(inputBaseName, col));
+                joins.add(simpleJoin(attrTbl));
+                conditions.add(new EqualsTo(column(attrTbl, "id"), column("input_id", "id")));
+            }
         }
         ps.setJoins(joins);
 
@@ -146,6 +158,13 @@ class GroupRenderer {
                 .map(attr -> (Expression) aggEqualityExists(inputBaseName, attr, baseName))
                 .toList();
             where = and(where, andAll(equalityConditions));
+        }
+
+        if (hasCaseWhen && !"COUNT".equals(functionName)) {
+            var isNotNull = new IsNullExpression();
+            isNotNull.setLeftExpression(argumentExpr);
+            isNotNull.setNot(true);
+            where = and(where, isNotNull);
         }
         ps.setWhere(where);
 
@@ -173,6 +192,8 @@ class GroupRenderer {
 
     private String renderCountAggregate(String baseName, String inputBaseName, IRExpression argument,
                                          List<String> columns, List<String> groupingAttrs) {
+        boolean hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(argument);
+
         var countSelect = buildAggregateSelect(baseName, inputBaseName, argument, columns, "COUNT", groupingAttrs);
 
         var baseIdTbl = table(idTable(baseName));
@@ -181,10 +202,18 @@ class GroupRenderer {
         var joins = new ArrayList<Join>();
         var conditions = new ArrayList<Expression>();
 
-        for (var col : columns) {
-            var attrTbl = table(attrTable(inputBaseName, col));
-            joins.add(simpleJoin(attrTbl));
-            conditions.add(new EqualsTo(column(attrTbl, "id"), column("input_id", "id")));
+        if (hasCaseWhen) {
+            for (var col : columns) {
+                var attrTbl = table(attrTable(inputBaseName, col));
+                joins.add(leftJoin(attrTbl,
+                    new EqualsTo(column(attrTbl, "id"), column("input_id", "id"))));
+            }
+        } else {
+            for (var col : columns) {
+                var attrTbl = table(attrTable(inputBaseName, col));
+                joins.add(simpleJoin(attrTbl));
+                conditions.add(new EqualsTo(column(attrTbl, "id"), column("input_id", "id")));
+            }
         }
 
         Expression subWhere = conditions.isEmpty()

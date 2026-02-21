@@ -92,6 +92,19 @@ public sealed interface IRExpression {
         }
     }
 
+    record WhenClause(Condition condition, IRExpression result) {}
+
+    record CaseWhen(java.util.List<WhenClause> whens, IRExpression elseExpr) implements IRExpression {
+        @Override
+        public String toString() {
+            var whensSql = whens.stream()
+                .map(when -> "WHEN %s THEN %s".formatted(when.condition(), when.result()))
+                .collect(java.util.stream.Collectors.joining(" "));
+            var elseSql = elseExpr != null ? " ELSE %s".formatted(elseExpr) : "";
+            return "CASE %s%s END".formatted(whensSql, elseSql);
+        }
+    }
+
     static BinaryOp add(IRExpression left, IRExpression right) {
         return new BinaryOp(left, "+", right);
     }

@@ -2,6 +2,7 @@ package nnsql.query.renderer.sql;
 
 import net.sf.jsqlparser.expression.*;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
 import net.sf.jsqlparser.statement.select.*;
 
 import nnsql.query.ir.Return;
@@ -58,6 +59,8 @@ class ReturnRenderer {
             throw new IllegalStateException("Computed expression must reference at least one column");
         }
 
+        boolean hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(attr.source());
+
         var idTbl = table(idTable(inputBaseName));
         var ps = new PlainSelect();
         ps.addSelectItem(column(idTbl, "id"));
@@ -70,9 +73,18 @@ class ReturnRenderer {
         var joins = new ArrayList<Join>();
         for (var col : columns) {
             var attrTbl = table(attrTable(inputBaseName, col));
-            joins.add(join(attrTbl, new EqualsTo(column(attrTbl, "id"), column(idTbl, "id"))));
+            var onExpr = new EqualsTo(column(attrTbl, "id"), column(idTbl, "id"));
+            joins.add(hasCaseWhen ? leftJoin(attrTbl, onExpr) : join(attrTbl, onExpr));
         }
         ps.setJoins(joins);
+
+        if (hasCaseWhen) {
+            var whereExpr = ExpressionSqlRenderer.toSqlExpr(attr.source(), inputBaseName);
+            var isNotNull = new IsNullExpression();
+            isNotNull.setLeftExpression(whereExpr);
+            isNotNull.setNot(true);
+            ps.setWhere(isNotNull);
+        }
 
         ctx.addCTE(attrCTE(baseName, attr.alias()), ps.toString());
     }

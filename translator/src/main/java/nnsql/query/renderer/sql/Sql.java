@@ -142,6 +142,14 @@ final class Sql {
         return j;
     }
 
+    static Join leftJoin(FromItem item, Expression on) {
+        var j = new Join();
+        j.setLeft(true);
+        j.setFromItem(item);
+        j.addOnExpression(on);
+        return j;
+    }
+
     static Join simpleJoin(FromItem item) {
         var j = new Join();
         j.setSimple(true);
