@@ -371,6 +371,30 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testInPredicateWithTrailingAndCondition() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.A = 5 AND R.B IN (1, 2, 3) AND R.B > 0"
+        ));
+
+        assertTrue(sql.contains("product_0_R_A.v = 5.0"));
+        assertTrue(sql.contains("product_0_R_B.v = 1.0"));
+        assertTrue(sql.contains("product_0_R_B.v = 2.0"));
+        assertTrue(sql.contains("product_0_R_B.v = 3.0"));
+        assertTrue(sql.contains("product_0_R_B.v > 0.0"));
+    }
+
+    @Test
+    void testInSubqueryWithTrailingAndConditionIsRejected() {
+        var exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> translator.translate(
+                "SELECT R.A FROM R WHERE R.B IN (SELECT S.B FROM S) AND R.A > 10"
+            )
+        );
+        assertEquals("IN with subquery is not supported", exception.getMessage());
+    }
+
+    @Test
     void testTPCHSchema() {
         assertQueryTranslation(
             // language=sql
@@ -815,6 +839,29 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testCountStar() {
+        var groupedSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A, COUNT(*) AS cnt FROM R GROUP BY R.A"
+        ));
+        assertTrue(groupedSql.contains("COUNT(1)"));
+        assertTrue(groupedSql.contains("group_1_cnt"));
+
+        var ungroupedSql = normalizeWhitespace(translator.translate(
+            "SELECT COUNT(*) AS cnt FROM R"
+        ));
+        assertTrue(ungroupedSql.contains("COUNT(1)"));
+        assertTrue(ungroupedSql.contains("group_1_cnt"));
+
+        var mixedSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A, COUNT(*) AS cnt, SUM(R.B) AS total FROM R GROUP BY R.A"
+        ));
+        assertTrue(mixedSql.contains("COUNT(1)"));
+        assertTrue(mixedSql.contains("SUM(product_0_R_B.v)"));
+        assertTrue(mixedSql.contains("group_1_cnt"));
+        assertTrue(mixedSql.contains("group_1_total"));
+    }
+
+    @Test
     void testArithmeticInHavingWithAggregateAlias() {
         var sql = normalizeWhitespace(translator.translate(
             "SELECT R.A, SUM(R.B) AS sum_b FROM R GROUP BY R.A HAVING sum_b * 2 > 10"
@@ -1021,6 +1068,33 @@ class QueryTranslationTest {
         assertTrue(sql.contains("unique_a__ID"), "CTE should produce unique_a__ID");
         assertTrue(sql.contains("unique_a_A"), "CTE should expose A attribute");
         assertTrue(sql.contains("duplelim_"), "CTE body should contain DISTINCT elimination");
+    }
+
+    @Test
+    void testAliaslessComputedExpressions() {
+        var singleExprSql = normalizeWhitespace(translator.translate(
+            "SELECT (R.A + R.B) FROM R"
+        ));
+        assertTrue(singleExprSql.contains("return_1_attr_expr_1"));
+        assertTrue(singleExprSql.contains("product_0_R_A.v + product_0_R_B.v"));
+
+        var secondPositionSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A, (R.A * R.B) FROM R"
+        ));
+        assertTrue(secondPositionSql.contains("return_1_attr_expr_2"));
+        assertTrue(secondPositionSql.contains("product_0_R_A.v * product_0_R_B.v"));
+
+        var groupedSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A, (R.A + R.B) FROM R GROUP BY R.A, R.B"
+        ));
+        assertTrue(groupedSql.contains("return_2_attr_expr_2"));
+        assertTrue(groupedSql.contains("group_1_R_A.v + group_1_R_B.v"));
+
+        var explicitAliasSql = normalizeWhitespace(translator.translate(
+            "SELECT (R.A + R.B) AS total FROM R"
+        ));
+        assertTrue(explicitAliasSql.contains("return_1_attr_total"));
+        assertFalse(explicitAliasSql.contains("expr_1"));
     }
 
     private void assertQueryTranslation(String inputQuery, String expectedOutput) {

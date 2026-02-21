@@ -11,6 +11,7 @@ import net.sf.jsqlparser.statement.select.*;
 import nnsql.query.SchemaRegistry;
 import nnsql.query.ir.*;
 import nnsql.query.ir.Return.AttributeRef;
+import nnsql.util.Option;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -18,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.IntStream;
 
 public class IRBuilder {
     private final SchemaRegistry schema;
@@ -117,7 +119,9 @@ public class IRBuilder {
         return switch (from) {
             case Table t -> {
                 var tableName = t.getName();
-                var alias = t.getAlias() != null ? t.getAlias().getName() : tableName;
+                var alias = Option.ofNullable(t.getAlias())
+                    .map(Alias::getName)
+                    .orElse(tableName);
 
                 var cteDef = cteDefinitions.get(tableName);
                 if (cteDef != null) {
@@ -135,9 +139,9 @@ public class IRBuilder {
                 yield new Relation.Table(tableName, alias, attributes);
             }
             case ParenthesedSelect ps -> {
-                var alias = ps.getAlias() != null
-                    ? ps.getAlias().getName()
-                    : "subq" + nodeIdCounter.getAndIncrement();
+                var alias = Option.ofNullable(ps.getAlias())
+                    .map(Alias::getName)
+                    .orElseGet(() -> "subq" + nodeIdCounter.getAndIncrement());
                 var subqueryIR = buildSelect((PlainSelect) ps.getSelect(), false);
                 var attributes = AttributeResolver.collectFrom(subqueryIR);
                 yield new Relation.Subquery(alias, subqueryIR, attributes);
@@ -174,9 +178,8 @@ public class IRBuilder {
                         );
                     })
                     .toList();
-                var elseExpr = caseExpr.getElseExpression() != null
-                    ? toExpression(caseExpr.getElseExpression())
-                    : null;
+                var elseExpr = Option.ofNullable(caseExpr.getElseExpression())
+                    .map(this::toExpression);
                 yield new IRExpression.CaseWhen(whens, elseExpr);
             }
             case ParenthesedExpressionList<?> p -> toExpression(p.getFirst());
@@ -214,8 +217,9 @@ public class IRBuilder {
     private IRExpression.Aggregate toAggregate(Function fn, String alias) {
         var functionName = fn.getName().toUpperCase();
         var argument = fn.getParameters() != null && !fn.getParameters().isEmpty()
+                && !(fn.getParameters().getFirst() instanceof AllColumns)
             ? toExpression(fn.getParameters().getFirst())
-            : new IRExpression.ColumnRef("*");
+            : IRExpression.number(1);
         return new IRExpression.Aggregate(functionName, argument, alias);
     }
 
@@ -261,32 +265,81 @@ public class IRBuilder {
                     ? Condition.or(Condition.lt(left, start), Condition.gt(left, end))
                     : Condition.and(Condition.gte(left, start), Condition.lte(left, end));
             }
-            case InExpression in when in.getRightExpression() instanceof ExpressionList<?> list -> {
-                if (list.isEmpty()) {
-                    throw new UnsupportedOperationException("IN with empty list is not supported");
-                }
-
-                var left = toExpression(in.getLeftExpression());
-                var values = list.stream()
-                    .map(e -> toExpression((Expression) e))
-                    .map(value -> switch (value) {
-                        case IRExpression.Literal lit -> lit;
-                        default -> throw new UnsupportedOperationException(
-                            "IN list supports literal values only"
-                        );
-                    })
-                    .toList();
-
-                yield in.isNot()
-                    ? Condition.and(values.stream().map(v -> (Condition) Condition.neq(left, v)).toList())
-                    : Condition.or(values.stream().map(v -> (Condition) Condition.eq(left, v)).toList());
-            }
-            case InExpression _ ->
-                throw new UnsupportedOperationException("IN with subquery is not supported");
+            case InExpression in -> toInCondition(in);
             case ParenthesedExpressionList<?> p -> toCondition(p.getFirst());
             default -> throw new UnsupportedOperationException(
                 "Unsupported condition: " + expr.getClass().getSimpleName());
         };
+    }
+
+    private Condition toInCondition(InExpression in) {
+        var normalized = normalizeInRightExpression(in.getRightExpression());
+        var inPayloadCondition = switch (normalized.payload()) {
+            case ExpressionList<?> list -> toInListCondition(in, list);
+            case ParenthesedSelect _ ->
+                throw new UnsupportedOperationException("IN with subquery is not supported");
+            default -> throw new UnsupportedOperationException(
+                "IN supports value lists and subqueries only"
+            );
+        };
+
+        if (normalized.trailingPredicates().isEmpty()) {
+            return inPayloadCondition;
+        }
+
+        var operands = new ArrayList<Condition>();
+        operands.add(inPayloadCondition);
+        normalized.trailingPredicates().forEach(expr -> operands.add(toCondition(expr)));
+        return Condition.and(operands);
+    }
+
+    private Condition toInListCondition(InExpression in, ExpressionList<?> list) {
+        if (list.isEmpty()) {
+            throw new UnsupportedOperationException("IN with empty list is not supported");
+        }
+
+        var left = toExpression(in.getLeftExpression());
+        var values = list.stream()
+            .map(Expression.class::cast)
+            .map(this::toExpression)
+            .map(value -> switch (value) {
+                case IRExpression.Literal lit -> lit;
+                default -> throw new UnsupportedOperationException(
+                    "IN list supports literal values only"
+                );
+            })
+            .toList();
+
+        return in.isNot()
+            ? Condition.and(values.stream().map(v -> (Condition) Condition.neq(left, v)).toList())
+            : Condition.or(values.stream().map(v -> (Condition) Condition.eq(left, v)).toList());
+    }
+
+    private InRightExpression normalizeInRightExpression(Expression rightExpression) {
+        if (!(rightExpression instanceof AndExpression and)) {
+            return new InRightExpression(rightExpression, List.of());
+        }
+
+        var operands = new ArrayList<Expression>();
+        flattenAndExpressions(and, operands);
+        var payload = operands.getFirst();
+        var trailingPredicates = new ArrayList<Expression>();
+        if (operands.size() > 1) {
+            trailingPredicates.addAll(operands.subList(1, operands.size()));
+        }
+        return new InRightExpression(payload, trailingPredicates);
+    }
+
+    private void flattenAndExpressions(Expression expr, List<Expression> operands) {
+        if (expr instanceof AndExpression and) {
+            flattenAndExpressions(and.getLeftExpression(), operands);
+            flattenAndExpressions(and.getRightExpression(), operands);
+        } else {
+            operands.add(expr);
+        }
+    }
+
+    private record InRightExpression(Expression payload, List<Expression> trailingPredicates) {
     }
 
     private void flattenAnd(Expression expr, List<Condition> operands) {
@@ -325,99 +378,108 @@ public class IRBuilder {
     private IRPipeline buildReturnForNonGroupBy(PlainSelect select, IRPipeline pipeline) {
         var selectItems = select.getSelectItems();
 
-        if (selectItems.size() == 1 && selectItems.getFirst().getExpression() instanceof AllColumns) {
+        if (isSelectAll(selectItems)) {
             return pipeline.returnAll();
         }
 
         var availableAttrs = AttributeResolver.collectFrom(pipeline.build());
-        var selectedAttrs = selectItems.stream()
-            .filter(item -> !(item.getExpression() instanceof AllColumns))
-            .map(item -> buildAttributeRef(item, availableAttrs))
+        var selectedAttrs = IntStream.range(0, selectItems.size())
+            .mapToObj(i -> buildNonGroupByAttributeRef(selectItems.get(i), availableAttrs, i + 1))
+            .flatMap(Option::stream)
             .toList();
 
         return pipeline.returnSelected(selectedAttrs);
     }
 
-    private AttributeRef buildAttributeRef(SelectItem<?> item, List<String> availableAttrs) {
+    private Option<AttributeRef> buildNonGroupByAttributeRef(
+        SelectItem<?> item,
+        List<String> availableAttrs,
+        int position
+    ) {
+        if (item.getExpression() instanceof AllColumns) {
+            return Option.none();
+        }
+        return Option.some(buildAttributeRef(item, availableAttrs, position));
+    }
+
+    private AttributeRef buildAttributeRef(SelectItem<?> item, List<String> availableAttrs, int position) {
         var irExpr = toExpression(item.getExpression());
 
         return switch (irExpr) {
             case IRExpression.ColumnRef(var colName) -> {
                 var resolvedName = AttributeResolver.resolve(colName, availableAttrs);
-                var alias = item.getAlias() != null ? item.getAlias().getName() : colName;
+                var alias = selectItemAlias(item, OutputAlias.column(colName));
                 yield AttributeRef.attr(resolvedName, alias);
             }
             case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _ -> {
-                if (item.getAlias() == null) {
-                    throw new IllegalArgumentException("Computed expressions require an alias");
-                }
+                var alias = selectItemAlias(item, OutputAlias.expression(position));
                 var qualifiedExpr = AttributeResolver.qualifyExpression(irExpr, availableAttrs);
-                yield AttributeRef.expr(qualifiedExpr, item.getAlias().getName());
+                yield AttributeRef.expr(qualifiedExpr, alias);
             }
             case IRExpression.Aggregate agg -> {
-                var alias = item.getAlias() != null ? item.getAlias().getName() : agg.alias();
+                var alias = selectItemAlias(item, OutputAlias.aggregate(agg));
                 yield AttributeRef.attr(alias, alias);
             }
-            case IRExpression.Literal _ ->
-                throw new IllegalArgumentException("Cannot use literal in SELECT without alias");
-            case IRExpression.ScalarSubquery _ ->
-                throw new IllegalArgumentException("Cannot use scalar subquery in SELECT without alias");
+            case IRExpression.Literal _, IRExpression.ScalarSubquery _ -> {
+                var alias = selectItemAlias(item, OutputAlias.expression(position));
+                var qualifiedExpr = AttributeResolver.qualifyExpression(irExpr, availableAttrs);
+                yield AttributeRef.expr(qualifiedExpr, alias);
+            }
         };
+    }
+
+    private String selectItemAlias(SelectItem<?> item, OutputAlias fallbackAlias) {
+        return Option.ofNullable(item.getAlias())
+            .map(Alias::getName)
+            .orElseGet(fallbackAlias::toString);
     }
 
     private IRPipeline buildReturnForGroupBy(PlainSelect select, IRPipeline pipeline) {
         var selectItems = select.getSelectItems();
-        var availableAttrs = AttributeResolver.collectFrom(pipeline.build());
-
-        if (selectItems.size() == 1 && selectItems.getFirst().getExpression() instanceof AllColumns) {
+        if (isSelectAll(selectItems)) {
             return pipeline.returnAll();
         }
 
-        var selectedAttrs = new ArrayList<AttributeRef>();
-
-        for (var selectItem : selectItems) {
-            var expr = selectItem.getExpression();
-
-            if (expr instanceof AllColumns) continue;
-
-            if (expr instanceof Function fn && isAggregate(fn)) {
-                var alias = selectItem.getAlias() != null
-                    ? selectItem.getAlias().getName()
-                    : generateDefaultAggregateAlias(fn);
-                selectedAttrs.add(AttributeRef.attr(alias, alias));
-            } else {
-                var irExpr = toExpression(expr);
-                switch (irExpr) {
-                    case IRExpression.ColumnRef(var colName) -> {
-                        var resolvedName = AttributeResolver.resolve(colName, availableAttrs);
-                        var alias = selectItem.getAlias() != null
-                            ? selectItem.getAlias().getName()
-                            : colName;
-                        selectedAttrs.add(AttributeRef.attr(resolvedName, alias));
-                    }
-                    case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _ -> {
-                        if (selectItem.getAlias() == null) {
-                            throw new IllegalArgumentException("Computed expressions require an alias");
-                        }
-                        var qualifiedExpr = AttributeResolver.qualifyExpression(irExpr, availableAttrs);
-                        selectedAttrs.add(AttributeRef.expr(qualifiedExpr, selectItem.getAlias().getName()));
-                    }
-                    default -> throw new UnsupportedOperationException(
-                        "Unsupported expression in GROUP BY SELECT: " + irExpr.getClass().getSimpleName()
-                    );
-                }
-            }
-        }
+        var availableAttrs = AttributeResolver.collectFrom(pipeline.build());
+        var selectedAttrs = IntStream.range(0, selectItems.size())
+            .mapToObj(i -> buildGroupByAttributeRef(selectItems.get(i), availableAttrs, i + 1))
+            .flatMap(Option::stream)
+            .toList();
 
         return pipeline.returnSelected(selectedAttrs);
     }
 
-    private String generateDefaultAggregateAlias(Function fn) {
-        var functionName = fn.getName().toLowerCase();
-        var argument = fn.getParameters() != null && !fn.getParameters().isEmpty()
-            ? toExpression(fn.getParameters().getFirst())
-            : new IRExpression.ColumnRef("*");
-        return functionName + "_" + argument.toString();
+    private Option<AttributeRef> buildGroupByAttributeRef(
+        SelectItem<?> selectItem,
+        List<String> availableAttrs,
+        int position
+    ) {
+        var expr = selectItem.getExpression();
+        if (expr instanceof AllColumns) {
+            return Option.none();
+        }
+
+        if (expr instanceof Function fn && isAggregate(fn)) {
+            var alias = selectItemAlias(selectItem, OutputAlias.aggregate(toAggregate(fn, null)));
+            return Option.some(AttributeRef.attr(alias, alias));
+        }
+
+        var irExpr = toExpression(expr);
+        return switch (irExpr) {
+            case IRExpression.ColumnRef(var colName) -> {
+                var resolvedName = AttributeResolver.resolve(colName, availableAttrs);
+                var alias = selectItemAlias(selectItem, OutputAlias.column(colName));
+                yield Option.some(AttributeRef.attr(resolvedName, alias));
+            }
+            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _ -> {
+                var alias = selectItemAlias(selectItem, OutputAlias.expression(position));
+                var qualifiedExpr = AttributeResolver.qualifyExpression(irExpr, availableAttrs);
+                yield Option.some(AttributeRef.expr(qualifiedExpr, alias));
+            }
+            default -> throw new UnsupportedOperationException(
+                "Unsupported expression in GROUP BY SELECT: " + irExpr.getClass().getSimpleName()
+            );
+        };
     }
 
     private IRPipeline addGroupBy(PlainSelect select, IRPipeline pipeline) {
@@ -445,20 +507,15 @@ public class IRBuilder {
             if (expr instanceof AllColumns) continue;
 
             if (expr instanceof Function fn && isAggregate(fn)) {
-                var functionName = fn.getName().toUpperCase();
-                var argument = fn.getParameters() != null && !fn.getParameters().isEmpty()
-                    ? toExpression(fn.getParameters().getFirst())
-                    : new IRExpression.ColumnRef("*");
-
-                String alias;
-                if (selectItem.getAlias() != null) {
-                    alias = selectItem.getAlias().getName();
-                } else {
-                    alias = functionName.toLowerCase() + "_" + argument.toString();
-                }
+                var baseAggregate = toAggregate(fn, null);
+                var argument = baseAggregate.argument();
+                var alias = selectItemAlias(
+                    selectItem,
+                    OutputAlias.aggregate(baseAggregate)
+                );
 
                 var qualifiedArgument = qualifyAggregateArgument(argument, availableAttrs);
-                aggregates.add(new IRExpression.Aggregate(functionName, qualifiedArgument, alias));
+                aggregates.add(new IRExpression.Aggregate(baseAggregate.function(), qualifiedArgument, alias));
             }
         }
 
@@ -469,6 +526,10 @@ public class IRBuilder {
             .toList());
 
         return pipeline.group(groupingAttributes, aggregates, outputAttributes);
+    }
+
+    private boolean isSelectAll(List<SelectItem<?>> selectItems) {
+        return selectItems.size() == 1 && selectItems.getFirst().getExpression() instanceof AllColumns;
     }
 
     private List<Sort.SortKey> parseSortKeys(PlainSelect select, IRPipeline pipeline) {
@@ -576,11 +637,15 @@ public class IRBuilder {
                         qualifyAggregateArgument(when.result(), availableAttrs)
                     ))
                     .toList();
-                var qualifiedElse = elseExpr != null
-                    ? qualifyAggregateArgument(elseExpr, availableAttrs)
-                    : null;
+                var qualifiedElse = qualifyAggregateArgument(elseExpr, availableAttrs);
                 yield new IRExpression.CaseWhen(qualifiedWhens, qualifiedElse);
             }
         };
+    }
+
+    private Option<IRExpression> qualifyAggregateArgument(
+        Option<IRExpression> expr, List<String> availableAttrs
+    ) {
+        return expr.map(value -> qualifyAggregateArgument(value, availableAttrs));
     }
 }

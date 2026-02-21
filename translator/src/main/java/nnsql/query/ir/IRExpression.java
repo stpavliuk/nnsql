@@ -1,5 +1,7 @@
 package nnsql.query.ir;
 
+import nnsql.util.Option;
+
 public sealed interface IRExpression {
 
     enum LiteralType {
@@ -94,13 +96,15 @@ public sealed interface IRExpression {
 
     record WhenClause(Condition condition, IRExpression result) {}
 
-    record CaseWhen(java.util.List<WhenClause> whens, IRExpression elseExpr) implements IRExpression {
+    record CaseWhen(java.util.List<WhenClause> whens, Option<IRExpression> elseExpr) implements IRExpression {
         @Override
         public String toString() {
             var whensSql = whens.stream()
                 .map(when -> "WHEN %s THEN %s".formatted(when.condition(), when.result()))
                 .collect(java.util.stream.Collectors.joining(" "));
-            var elseSql = elseExpr != null ? " ELSE %s".formatted(elseExpr) : "";
+            var elseSql = elseExpr
+                .map(expr -> " ELSE %s".formatted(expr))
+                .orElse("");
             return "CASE %s%s END".formatted(whensSql, elseSql);
         }
     }

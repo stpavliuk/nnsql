@@ -33,26 +33,27 @@ class ReturnRenderer {
     private void addAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
                                    List<Return.AttributeRef> selectedAttributes) {
         selectedAttributes.forEach(attr -> {
-            if (attr.isSimpleColumn()) {
-                addSimpleColumnCTE(ctx, baseName, inputBaseName, attr);
-            } else {
-                addComputedExpressionCTE(ctx, baseName, inputBaseName, attr);
+            switch (attr) {
+                case Return.ColumnAttributeRef columnAttr ->
+                    addSimpleColumnCTE(ctx, baseName, inputBaseName, columnAttr);
+                case Return.ExpressionAttributeRef expressionAttr ->
+                    addComputedExpressionCTE(ctx, baseName, inputBaseName, expressionAttr);
             }
         });
     }
 
     private void addSimpleColumnCTE(RenderContext ctx, String baseName, String inputBaseName,
-                                     Return.AttributeRef attr) {
+                                     Return.ColumnAttributeRef attr) {
         var ps = new PlainSelect();
         ps.addSelectItem(column("id"));
         ps.addSelectItem(column("v"));
-        ps.setFromItem(table(attrTable(inputBaseName, attr.sourceColumnName())));
+        ps.setFromItem(table(attrTable(inputBaseName, attr.source().columnName())));
 
         ctx.addCTE(attrCTE(baseName, attr.alias()), ps.toString());
     }
 
     private void addComputedExpressionCTE(RenderContext ctx, String baseName, String inputBaseName,
-                                           Return.AttributeRef attr) {
+                                           Return.ExpressionAttributeRef attr) {
         var columns = ExpressionSqlRenderer.collectColumns(attr.source());
         if (columns.isEmpty()) {
             throw new IllegalStateException("Computed expression must reference at least one column");

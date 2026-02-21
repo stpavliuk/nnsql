@@ -31,9 +31,8 @@ final class ExpressionSqlRenderer {
                         collectColumnsFromCondition(when.condition()).stream(),
                         collectColumns(when.result()).stream()
                     ));
-                var elseColumns = elseExpr != null
-                    ? collectColumns(elseExpr).stream()
-                    : Stream.<String>empty();
+                var elseColumns = elseExpr.stream()
+                    .flatMap(elseValue -> collectColumns(elseValue).stream());
                 yield Stream.concat(whenColumns, elseColumns).distinct().toList();
             }
             case IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->
@@ -113,9 +112,10 @@ final class ExpressionSqlRenderer {
                     })
                     .toList();
                 sqlCaseExpr.setWhenClauses(sqlWhens);
-                if (elseExpr != null) {
-                    sqlCaseExpr.setElseExpression(toSqlExpr(elseExpr, baseName));
-                }
+                elseExpr
+                    .map(elseValue -> toSqlExpr(elseValue, baseName))
+                    .stream()
+                    .forEach(sqlCaseExpr::setElseExpression);
                 yield sqlCaseExpr;
             }
             case IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->

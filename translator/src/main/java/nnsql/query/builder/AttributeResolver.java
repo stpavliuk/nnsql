@@ -3,6 +3,7 @@ package nnsql.query.builder;
 import nnsql.query.ir.*;
 import nnsql.query.ir.Condition.*;
 import nnsql.query.ir.Return.AttributeRef;
+import nnsql.util.Option;
 
 import java.util.List;
 
@@ -54,15 +55,19 @@ public class AttributeResolver {
                         qualifyExpression(when.result(), availableAttrs)
                     ))
                     .toList();
-                var qualifiedElse = elseExpr != null
-                    ? qualifyExpression(elseExpr, availableAttrs)
-                    : null;
+                var qualifiedElse = qualifyExpression(elseExpr, availableAttrs);
                 yield new IRExpression.CaseWhen(qualifiedWhens, qualifiedElse);
             }
             case IRExpression.Literal _,
                  IRExpression.Aggregate _,
                  IRExpression.ScalarSubquery _ -> expr;
         };
+    }
+
+    private static Option<IRExpression> qualifyExpression(
+        Option<IRExpression> expression, List<String> availableAttrs
+    ) {
+        return expression.map(expr -> qualifyExpression(expr, availableAttrs));
     }
 
     public static List<String> collectFromProduct(Product product) {

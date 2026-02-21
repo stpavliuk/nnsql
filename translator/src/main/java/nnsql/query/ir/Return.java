@@ -1,5 +1,7 @@
 package nnsql.query.ir;
 
+import nnsql.util.Option;
+
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -22,10 +24,28 @@ public record Return(IRNode input, List<AttributeRef> selectedAttributes, boolea
         return "RETURN(%s)".formatted(attrs);
     }
 
-    public record AttributeRef(IRExpression source, String alias) {
-        public AttributeRef(IRExpression source, String alias) {
-            this.source = source;
-            this.alias = alias != null ? alias : deriveAlias(source);
+    public sealed interface AttributeRef
+        permits ColumnAttributeRef, ExpressionAttributeRef {
+        IRExpression source();
+
+        String alias();
+
+        static AttributeRef attr(String sourceName, String alias) {
+            var source = new IRExpression.ColumnRef(sourceName);
+            var resolvedAlias = Option.ofNullable(alias).orElse(sourceName);
+            return new ColumnAttributeRef(source, resolvedAlias);
+        }
+
+        static AttributeRef attr(String sourceName) {
+            return attr(sourceName, sourceName);
+        }
+
+        static AttributeRef expr(IRExpression source, String alias) {
+            var resolvedAlias = Option.ofNullable(alias).orElseGet(() -> deriveAlias(source));
+            return switch (source) {
+                case IRExpression.ColumnRef col -> new ColumnAttributeRef(col, resolvedAlias);
+                default -> new ExpressionAttributeRef(source, resolvedAlias);
+            };
         }
 
         private static String deriveAlias(IRExpression source) {
@@ -35,25 +55,16 @@ public record Return(IRNode input, List<AttributeRef> selectedAttributes, boolea
                 default -> throw new IllegalArgumentException("Expression requires an alias");
             };
         }
+    }
 
-        public static AttributeRef attr(String sourceName, String alias) {
-            return new AttributeRef(new IRExpression.ColumnRef(sourceName), alias);
-        }
+    public record ColumnAttributeRef(IRExpression.ColumnRef source, String alias) implements AttributeRef {
+    }
 
-        public static AttributeRef attr(String sourceName) {
-            return attr(sourceName, sourceName);
-        }
-
-        public static AttributeRef expr(IRExpression source, String alias) {
-            return new AttributeRef(source, alias);
-        }
-
-        public boolean isSimpleColumn() {
-            return source instanceof IRExpression.ColumnRef;
-        }
-
-        public String sourceColumnName() {
-            return source instanceof IRExpression.ColumnRef(var col) ? col : null;
+    public record ExpressionAttributeRef(IRExpression source, String alias) implements AttributeRef {
+        public ExpressionAttributeRef {
+            if (source instanceof IRExpression.ColumnRef) {
+                throw new IllegalArgumentException("Column expressions must use ColumnAttributeRef");
+            }
         }
     }
 }
