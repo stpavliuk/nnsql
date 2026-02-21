@@ -528,14 +528,28 @@ public class IRBuilder {
 
     private IRPipeline addGroupBy(PlainSelect select, IRPipeline pipeline) {
         var availableAttrs = AttributeResolver.collectFrom(pipeline.build());
+        var selectAliasSourceAttributes = new LinkedHashMap<String, String>();
+        var selectAliasUnsupportedExpressionTypes = new LinkedHashMap<String, String>();
+        buildGroupByAliasBindings(
+            select.getSelectItems(),
+            availableAttrs,
+            selectAliasSourceAttributes,
+            selectAliasUnsupportedExpressionTypes
+        );
 
         List<String> groupingAttributes;
         if (select.getGroupBy() != null) {
             var groupByExprs = new ArrayList<String>();
             for (var expr : select.getGroupBy().getGroupByExpressionList()) {
                 if (expr instanceof Column col) {
-                    var colRef = toColumnRef(col);
-                    groupByExprs.add(AttributeResolver.resolve(colRef.columnName(), availableAttrs));
+                    groupByExprs.add(
+                        resolveGroupByAttribute(
+                            col,
+                            availableAttrs,
+                            selectAliasSourceAttributes,
+                            selectAliasUnsupportedExpressionTypes
+                        )
+                    );
                 }
             }
             groupingAttributes = groupByExprs;
@@ -570,6 +584,81 @@ public class IRBuilder {
             .toList());
 
         return pipeline.group(groupingAttributes, aggregates, outputAttributes);
+    }
+
+    private void buildGroupByAliasBindings(
+        List<SelectItem<?>> selectItems,
+        List<String> availableAttrs,
+        Map<String, String> aliasToSourceAttributes,
+        Map<String, String> aliasToUnsupportedExpressionTypes
+    ) {
+        for (var selectItem : selectItems) {
+            var expression = selectItem.getExpression();
+            if (expression instanceof AllColumns) {
+                continue;
+            }
+
+            Option.ofNullable(selectItem.getAlias())
+                .map(Alias::getName)
+                .stream()
+                .forEach(aliasName -> bindGroupByAlias(
+                    aliasName,
+                    expression,
+                    availableAttrs,
+                    aliasToSourceAttributes,
+                    aliasToUnsupportedExpressionTypes
+                ));
+        }
+    }
+
+    private void bindGroupByAlias(
+        String aliasName,
+        Expression expression,
+        List<String> availableAttrs,
+        Map<String, String> aliasToSourceAttributes,
+        Map<String, String> aliasToUnsupportedExpressionTypes
+    ) {
+        var irExpression = toExpression(expression);
+        switch (irExpression) {
+            case IRExpression.ColumnRef(var columnName) ->
+                aliasToSourceAttributes.put(
+                    aliasName,
+                    AttributeResolver.resolve(columnName, availableAttrs)
+                );
+            default ->
+                aliasToUnsupportedExpressionTypes.put(
+                    aliasName,
+                    irExpression.getClass().getSimpleName()
+                );
+        }
+    }
+
+    private String resolveGroupByAttribute(
+        Column column,
+        List<String> availableAttrs,
+        Map<String, String> selectAliasSourceAttributes,
+        Map<String, String> selectAliasUnsupportedExpressionTypes
+    ) {
+        var columnRef = toColumnRef(column).columnName();
+
+        try {
+            return AttributeResolver.resolve(columnRef, availableAttrs);
+        } catch (IllegalArgumentException error) {
+            return switch (Option.ofNullable(selectAliasSourceAttributes.get(columnRef))) {
+                case Option.Some(var sourceAttribute) -> sourceAttribute;
+                case Option.None() -> {
+                    var expressionType = Option.ofNullable(
+                        selectAliasUnsupportedExpressionTypes.get(columnRef)
+                    ).orElseThrow(() -> error);
+                    throw new UnsupportedOperationException(
+                        (
+                            "GROUP BY alias '%s' resolves to unsupported %s expression; " +
+                                "only simple column aliases are supported"
+                        ).formatted(columnRef, expressionType)
+                    );
+                }
+            };
+        }
     }
 
     private boolean isSelectAll(List<SelectItem<?>> selectItems) {

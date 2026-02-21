@@ -862,6 +862,24 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testGroupByColumnAliasResolution() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A AS alias_a, SUM(R.B) AS total FROM R GROUP BY alias_a"
+        ));
+        assertTrue(sql.contains("group_1_R_A"));
+        assertTrue(sql.contains("return_2_attr_alias_a"));
+        assertTrue(sql.contains("return_2_attr_total"));
+    }
+
+    @Test
+    void testGroupByComputedAliasResolutionFailure() {
+        var exception = assertThrows(UnsupportedOperationException.class, () ->
+            translator.translate("SELECT R.A + R.B AS total FROM R GROUP BY total")
+        );
+        assertTrue(exception.getMessage().contains("GROUP BY alias 'total'"));
+    }
+
+    @Test
     void testCountWithArithmeticExpression() {
         var sql = normalizeWhitespace(translator.translate(
             "SELECT COUNT(R.A + R.B) AS cnt FROM R"
