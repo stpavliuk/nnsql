@@ -3,9 +3,14 @@ plugins {
     id 'application'
 }
 
+def nnsqlToolchainVersion = providers
+    .gradleProperty('nnsqlToolchainVersion')
+    .map { Integer.parseInt(it) }
+    .orElse(25)
+
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
+        languageVersion = JavaLanguageVersion.of(nnsqlToolchainVersion.get())
     }
 }
 

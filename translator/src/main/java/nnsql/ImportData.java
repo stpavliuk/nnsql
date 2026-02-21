@@ -23,7 +23,7 @@ public class ImportData {
         this.connection = connection;
     }
 
-    static void main() {
+    public static void main(String[] args) {
         var schemaRegistry = new SchemaRegistry();
         var ddlTranslator = new DDLTranslator(schemaRegistry);
         var dmlTranslator = new DMLTranslator(schemaRegistry);
@@ -62,7 +62,7 @@ public class ImportData {
         // exported data contained unquoted date literals like 1996-03-13
         // kinda fix for that :)
         return sql.replaceAll(
-            "(?<!['])\\b(\\d{4}-\\d{2}-\\d{2})\\b(?!')",
+            "(?<!')\\b(\\d{4}-\\d{2}-\\d{2})\\b(?!')",
             "'$1'"
         );
     }

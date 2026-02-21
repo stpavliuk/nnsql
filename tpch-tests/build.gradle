@@ -2,9 +2,14 @@ plugins {
     id 'java'
 }
 
+def nnsqlToolchainVersion = providers
+    .gradleProperty('nnsqlToolchainVersion')
+    .map { Integer.parseInt(it) }
+    .orElse(25)
+
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
+        languageVersion = JavaLanguageVersion.of(nnsqlToolchainVersion.get())
     }
 }
 
@@ -26,4 +31,17 @@ tasks.named('test') {
     if (System.getProperty('nnsql.tpch.queries')) {
         systemProperty 'nnsql.tpch.queries', System.getProperty('nnsql.tpch.queries')
     }
+}
+
+tasks.named('build') {
+    setDependsOn(dependsOn.findAll { dependency ->
+        def dependencyName = dependency?.hasProperty('name') ? dependency.name : dependency?.toString()
+        dependencyName != 'check'
+    })
+}
+
+tasks.register('tpchTest') {
+    group = 'verification'
+    description = 'Runs TPCH integration tests.'
+    dependsOn(tasks.named('test'))
 }

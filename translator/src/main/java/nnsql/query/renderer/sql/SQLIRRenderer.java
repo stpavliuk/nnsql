@@ -25,7 +25,6 @@ import static nnsql.query.renderer.sql.Sql.withSelect;
 
 public class SQLIRRenderer implements IRRenderer {
 
-    private final ConditionRenderer conditionRenderer;
     private final ProductRenderer   productRenderer;
     private final FilterRenderer    filterRenderer;
     private final GroupRenderer     groupRenderer;
@@ -36,7 +35,7 @@ public class SQLIRRenderer implements IRRenderer {
     private IdentityHashMap<IRNode, String> activeSubqueryCache;
 
     public SQLIRRenderer() {
-        this.conditionRenderer = new ConditionRenderer(this::renderNodeForSubquery);
+        var conditionRenderer = new ConditionRenderer(this::renderNodeForSubquery);
         this.productRenderer = new ProductRenderer();
         this.filterRenderer = new FilterRenderer(conditionRenderer);
         this.groupRenderer = new GroupRenderer();

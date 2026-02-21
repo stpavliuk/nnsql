@@ -53,8 +53,12 @@ Run all tests:
 ./gradlew test
 ```
 
+Run lint checks (Qodana):
+```bash
+./gradlew lint
+```
+
 ## Further work
 - Implement additional SQL features and optimizations for 6NF queries
 - Use LOAD for data import instead of translating INSERT statements
 - Implement schema registry persistence and dynamic loading
-

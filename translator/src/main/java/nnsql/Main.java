@@ -8,7 +8,7 @@ import nnsql.query.renderer.sql.SQLIRRenderer;
 
 public class Main {
 
-    static void main(String[] input) {
+    public static void main(String[] input) {
         try {
             if (input.length < 1) {
                 throw new IllegalArgumentException(

@@ -3,7 +3,6 @@ package nnsql.query.renderer.sql;
 import net.sf.jsqlparser.expression.*;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
 import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
-import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.select.*;
 
 import nnsql.query.ir.IRExpression;
@@ -37,7 +36,7 @@ class GroupRenderer {
             var r1Tbl = tableAlias(idTable(inputBaseName), "R1");
 
             var equalityConditions = groupingAttrs.stream()
-                .map(attr -> (Expression) equalityExists(inputBaseName, attr, "a1", "a2",
+                .map(attr -> equalityExists(inputBaseName, attr, "a1", "a2",
                     column(inputIdTbl, "id"), column("R1", "id")))
                 .toList();
 
@@ -137,7 +136,7 @@ class GroupRenderer {
 
         if (!groupingAttrs.isEmpty()) {
             var equalityConditions = groupingAttrs.stream()
-                .map(attr -> (Expression) equalityExists(inputBaseName, attr, "g1", "g2",
+                .map(attr -> equalityExists(inputBaseName, attr, "g1", "g2",
                     column("input_id", "id"), column(idTable(baseName), "id")))
                 .toList();
             where = and(where, andAll(equalityConditions));
@@ -184,7 +183,7 @@ class GroupRenderer {
 
         if (!groupingAttrs.isEmpty()) {
             var equalityConditions = groupingAttrs.stream()
-                .map(attr -> (Expression) equalityExists(inputBaseName, attr, "g1", "g2",
+                .map(attr -> equalityExists(inputBaseName, attr, "g1", "g2",
                     column("input_id", "id"), column(idTable(baseName), "id")))
                 .toList();
             subWhere = and(subWhere, andAll(equalityConditions));

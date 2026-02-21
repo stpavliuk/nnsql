@@ -24,7 +24,7 @@ class DuplElimRenderer {
         var r1Tbl = tableAlias(idTable(inputBaseName), "R1");
 
         var equalityConditions = duplElim.attributes().stream()
-            .map(attr -> (Expression) generateEqualityCondition(inputBaseName, attr))
+            .map(attr -> generateEqualityCondition(inputBaseName, attr))
             .toList();
 
         var subquery = new PlainSelect();

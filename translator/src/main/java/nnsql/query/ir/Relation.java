@@ -1,7 +1,6 @@
 package nnsql.query.ir;
 
 import java.util.List;
-import java.util.Optional;
 
 public sealed interface Relation {
     String alias();
