@@ -814,6 +814,168 @@ class QueryTranslationTest {
         assertTrue(sql.contains("group_1_sum_b.v * 2.0 > 10.0"));
     }
 
+    @Test
+    void testChainedCTEs() {
+        assertQueryTranslation(
+            // language=sql
+            """
+                WITH c1 AS (SELECT A, B FROM R WHERE B > 5),
+                     c2 AS (SELECT A FROM c1 WHERE B = 10)
+                SELECT A FROM c2
+                """,
+            // language=sql
+            """
+                WITH all_ids_product_2 AS (
+                    SELECT R__ID.id || '_0' AS id, R__ID.id AS id1 FROM R__ID AS R__ID
+                ),
+                product_2_id AS (
+                    SELECT id FROM all_ids_product_2
+                ),
+                product_2_R_A AS (
+                    SELECT all_ids_product_2.id, R_A.v FROM all_ids_product_2, R_A WHERE all_ids_product_2.id1 = R_A.id
+                ),
+                product_2_R_B AS (
+                    SELECT all_ids_product_2.id, R_B.v FROM all_ids_product_2, R_B WHERE all_ids_product_2.id1 = R_B.id
+                ),
+                filter_3_id AS (
+                    SELECT product_2_id.id FROM product_2_id WHERE EXISTS (SELECT * FROM product_2_R_B WHERE product_2_R_B.id = product_2_id.id AND product_2_R_B.v > 5.0)
+                ),
+                filter_3_R_A AS (
+                    SELECT product_2_R_A.* FROM product_2_R_A JOIN filter_3_id ON filter_3_id.id = product_2_R_A.id
+                ),
+                filter_3_R_B AS (
+                    SELECT product_2_R_B.* FROM product_2_R_B JOIN filter_3_id ON filter_3_id.id = product_2_R_B.id
+                ),
+                return_4_id AS (
+                    SELECT id FROM filter_3_id
+                ),
+                return_4_attr_A AS (
+                    SELECT id, v FROM filter_3_R_A
+                ),
+                return_4_attr_B AS (
+                    SELECT id, v FROM filter_3_R_B
+                ),
+                c1__ID AS (
+                    SELECT id FROM return_4_id
+                ),
+                c1_A AS (
+                    SELECT id, v FROM return_4_attr_A
+                ),
+                c1_B AS (
+                    SELECT id, v FROM return_4_attr_B
+                ),
+                all_ids_product_1 AS (
+                    SELECT c1__ID.id || '_0' AS id, c1__ID.id AS id1 FROM c1__ID AS c1__ID
+                ),
+                product_1_id AS (
+                    SELECT id FROM all_ids_product_1
+                ),
+                product_1_c1_A AS (
+                    SELECT all_ids_product_1.id, c1_A.v FROM all_ids_product_1, c1_A WHERE all_ids_product_1.id1 = c1_A.id
+                ),
+                product_1_c1_B AS (
+                    SELECT all_ids_product_1.id, c1_B.v FROM all_ids_product_1, c1_B WHERE all_ids_product_1.id1 = c1_B.id
+                ),
+                filter_5_id AS (
+                    SELECT product_1_id.id FROM product_1_id WHERE EXISTS (SELECT * FROM product_1_c1_B WHERE product_1_c1_B.id = product_1_id.id AND product_1_c1_B.v = 10.0)
+                ),
+                filter_5_c1_A AS (
+                    SELECT product_1_c1_A.* FROM product_1_c1_A JOIN filter_5_id ON filter_5_id.id = product_1_c1_A.id
+                ),
+                return_6_id AS (
+                    SELECT id FROM filter_5_id
+                ),
+                return_6_attr_A AS (
+                    SELECT id, v FROM filter_5_c1_A
+                ),
+                c2__ID AS (
+                    SELECT id FROM return_6_id
+                ),
+                c2_A AS (
+                    SELECT id, v FROM return_6_attr_A
+                ),
+                all_ids_product_0 AS (
+                    SELECT c2__ID.id || '_0' AS id, c2__ID.id AS id1 FROM c2__ID AS c2__ID
+                ),
+                product_0_id AS (
+                    SELECT id FROM all_ids_product_0
+                ),
+                product_0_c2_A AS (
+                    SELECT all_ids_product_0.id, c2_A.v FROM all_ids_product_0, c2_A WHERE all_ids_product_0.id1 = c2_A.id
+                ),
+                return_7_id AS (
+                    SELECT id FROM product_0_id
+                ),
+                return_7_attr_A AS (
+                    SELECT id, v FROM product_0_c2_A
+                )
+                SELECT return_7_attr_A.v AS A FROM return_7_id JOIN return_7_attr_A ON return_7_id.id = return_7_attr_A.id;\
+                """
+        );
+    }
+
+    @Test
+    void testMultiReferenceCTE() {
+        var sql = normalizeWhitespace(translator.translate(
+            // language=sql
+            """
+                WITH cte AS (SELECT A, B FROM R)
+                SELECT t1.A FROM cte t1, cte t2 WHERE t1.A = t2.B
+                """
+        ));
+        assertTrue(sql.contains("t1__ID"), "t1 alias should produce t1__ID");
+        assertTrue(sql.contains("t2__ID"), "t2 alias should produce t2__ID");
+        assertTrue(sql.contains("product_0_t1_A"), "t1.A should be accessible");
+        assertTrue(sql.contains("product_0_t2_B"), "t2.B should be accessible");
+        assertTrue(sql.contains("product_0_t1_A.v = product_0_t2_B.v"), "Join condition");
+
+        // CTE body should be rendered only once — t1 and t2 should reference the same base CTEs
+        assertEquals(1, countOccurrences(sql, "all_ids_product_1 AS"),
+            "CTE body should be defined once, not duplicated per reference");
+    }
+
+    private int countOccurrences(String text, String substring) {
+        int count = 0;
+        int idx = 0;
+        while ((idx = text.indexOf(substring, idx)) != -1) {
+            count++;
+            idx += substring.length();
+        }
+        return count;
+    }
+
+    @Test
+    void testCTEWithAggregation() {
+        var sql = normalizeWhitespace(translator.translate(
+            // language=sql
+            """
+                WITH totals AS (SELECT A, SUM(B) AS sum_b FROM R GROUP BY A)
+                SELECT A, sum_b FROM totals WHERE sum_b > 100
+                """
+        ));
+        assertTrue(sql.contains("totals__ID"), "CTE should produce totals__ID");
+        assertTrue(sql.contains("totals_A"), "CTE should expose A attribute");
+        assertTrue(sql.contains("totals_sum_b"), "CTE should expose sum_b aggregate");
+        assertTrue(sql.contains("group_"), "CTE body should contain grouping");
+        assertTrue(sql.contains("SUM("), "CTE body should contain SUM aggregate");
+        assertTrue(sql.contains("sum_b") && sql.contains("> 100.0"),
+            "Outer query should filter on sum_b > 100");
+    }
+
+    @Test
+    void testCTEWithDistinct() {
+        var sql = normalizeWhitespace(translator.translate(
+            // language=sql
+            """
+                WITH unique_a AS (SELECT DISTINCT A FROM R)
+                SELECT A FROM unique_a
+                """
+        ));
+        assertTrue(sql.contains("unique_a__ID"), "CTE should produce unique_a__ID");
+        assertTrue(sql.contains("unique_a_A"), "CTE should expose A attribute");
+        assertTrue(sql.contains("duplelim_"), "CTE body should contain DISTINCT elimination");
+    }
+
     private void assertQueryTranslation(String inputQuery, String expectedOutput) {
         String actualOutput = translator.translate(inputQuery);
         assertEquals(normalizeWhitespace(expectedOutput), normalizeWhitespace(actualOutput));

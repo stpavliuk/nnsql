@@ -7,6 +7,7 @@ import net.sf.jsqlparser.statement.select.PlainSelect;
 import nnsql.query.ir.*;
 import nnsql.query.renderer.*;
 
+import java.util.IdentityHashMap;
 import java.util.stream.Collectors;
 
 import static nnsql.query.renderer.sql.Sql.attrCTE;
@@ -27,8 +28,10 @@ public class SQLIRRenderer implements IRRenderer {
     private final ReturnRenderer    returnRenderer;
     private final DuplElimRenderer  duplElimRenderer;
 
+    private IdentityHashMap<IRNode, String> activeSubqueryCache;
+
     public SQLIRRenderer() {
-        this.conditionRenderer = new ConditionRenderer(this::renderNode);
+        this.conditionRenderer = new ConditionRenderer(this::renderNodeForSubquery);
         this.productRenderer = new ProductRenderer();
         this.filterRenderer = new FilterRenderer(conditionRenderer);
         this.groupRenderer = new GroupRenderer();
@@ -40,7 +43,9 @@ public class SQLIRRenderer implements IRRenderer {
     @Override
     public String render(IRNode ir) {
         var ctx = new RenderContext();
+        activeSubqueryCache = new IdentityHashMap<>();
         var lastBaseName = renderNode(ir, ctx);
+        activeSubqueryCache = null;
         var finalSelect = buildFinalSelect(ir, lastBaseName);
         var rootCTEs = findReferencedCTENames(finalSelect, ctx);
 
@@ -71,6 +76,10 @@ public class SQLIRRenderer implements IRRenderer {
         return referenced;
     }
 
+    private String renderNodeForSubquery(IRNode node, RenderContext ctx) {
+        return renderNode(node, ctx);
+    }
+
     private String renderNode(IRNode node, RenderContext ctx) {
         return switch (node) {
             case Product p -> renderWithoutInput("product_", ctx, (c, b) -> {
@@ -99,7 +108,8 @@ public class SQLIRRenderer implements IRRenderer {
     private void preRenderSubqueryRelations(Product product, RenderContext ctx) {
         for (var rel : product.relations()) {
             if (rel instanceof Relation.Subquery(var alias, var ir, var attrs)) {
-                var subqBaseName = renderNode(ir, ctx);
+                var subqBaseName = activeSubqueryCache.computeIfAbsent(
+                    ir, k -> renderNode(k, ctx));
                 ctx.addCTE(alias + "__ID", "SELECT id FROM " + idTable(subqBaseName));
                 for (var attr : attrs) {
                     ctx.addCTE(attrTable(alias, attr),
