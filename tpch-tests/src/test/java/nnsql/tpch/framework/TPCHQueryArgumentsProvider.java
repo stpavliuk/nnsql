@@ -25,33 +25,12 @@ public class TPCHQueryArgumentsProvider
         if (fileName == null || fileName.isBlank()) {
             throw new IllegalStateException("TPCH query file name is not configured");
         }
-        return Stream.of(Arguments.of(normalizeSql(readResource(fileName))));
-    }
-
-    private static String normalizeSql(String sql) {
-        if (sql == null || sql.isBlank()) {
-            throw new IllegalStateException("TPCH query SQL is blank");
-        }
-
-        var stripped = sql.lines()
-            .map(TPCHQueryArgumentsProvider::stripLineComment)
-            .toList();
-        var cleaned = String.join("\n", stripped).strip();
-
-        if (cleaned.endsWith(";")) {
-            cleaned = cleaned.substring(0, cleaned.length() - 1).strip();
-        }
-
-        if (cleaned.isBlank()) {
+        var querySql = TpchDataProvider.normalizeQuerySql(readResource(fileName));
+        if (querySql == null || querySql.isBlank()) {
             throw new IllegalStateException("TPCH query SQL is blank after normalization");
         }
-
-        return cleaned;
-    }
-
-    private static String stripLineComment(String line) {
-        var idx = line.indexOf("--");
-        return idx >= 0 ? line.substring(0, idx) : line;
+        var orderSensitive = TpchDataProvider.hasOuterOrderBy(querySql);
+        return Stream.of(Arguments.of(querySql, orderSensitive));
     }
 
     private static String readResource(String fileName) {

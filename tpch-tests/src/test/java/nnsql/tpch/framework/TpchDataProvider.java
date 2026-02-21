@@ -1,5 +1,8 @@
 package nnsql.tpch.framework;
 
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.sql.*;
@@ -51,45 +54,18 @@ public class TpchDataProvider implements BenchmarkDataProvider {
     }
 
     static String normalizeQuerySql(String sql) {
-        if (sql == null || sql.isBlank()) return null;
-        var withoutComments = sql.lines()
-            .map(TpchDataProvider::stripLineComment)
-            .toList();
-        var cleaned = String.join("\n", withoutComments).strip();
-        if (cleaned.endsWith(";")) cleaned = cleaned.substring(0, cleaned.length() - 1).strip();
-        return cleaned;
+        if (sql == null || sql.isBlank()) {
+            return null;
+        }
+        return parseTopLevelSelect(sql).toString();
     }
 
     static boolean hasOuterOrderBy(String sql) {
-        if (sql == null || sql.isBlank()) return false;
-        return findOuterKeyword(sql, "ORDER BY") >= 0;
-    }
-
-    static int findOuterKeyword(String sql, String keyword) {
-        var upper = sql.toUpperCase();
-        var kw = keyword.toUpperCase();
-        int depth = 0;
-
-        for (int i = 0; i < upper.length(); i++) {
-            char c = upper.charAt(i);
-            if (c == '(') {
-                depth++;
-                continue;
-            }
-            if (c == ')') {
-                depth--;
-                continue;
-            }
-            if (depth == 0 && matchesKeyword(upper, kw, i)) {
-                return i;
-            }
+        if (sql == null || sql.isBlank()) {
+            return false;
         }
-        return -1;
-    }
-
-    private static String stripLineComment(String line) {
-        var idx = line.indexOf("--");
-        return idx >= 0 ? line.substring(0, idx) : line;
+        var parsed = parseTopLevelSelect(sql);
+        return parsed.getOrderByElements() != null && !parsed.getOrderByElements().isEmpty();
     }
 
     private static IntStream expandRange(String token) {
@@ -102,15 +78,12 @@ public class TpchDataProvider implements BenchmarkDataProvider {
         return IntStream.of(Integer.parseInt(token));
     }
 
-    private static boolean matchesKeyword(String sql, String keyword, int position) {
-        if (!sql.startsWith(keyword, position)) {
-            return false;
+    private static PlainSelect parseTopLevelSelect(String sql) {
+        try {
+            return (PlainSelect) CCJSqlParserUtil.parse(sql);
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to parse TPCH SQL query", e);
         }
-        if (position > 0 && Character.isLetterOrDigit(sql.charAt(position - 1))) {
-            return false;
-        }
-        var end = position + keyword.length();
-        return end >= sql.length() || !Character.isLetterOrDigit(sql.charAt(end));
     }
 
     private static String readQueryResource(int queryNr) {
