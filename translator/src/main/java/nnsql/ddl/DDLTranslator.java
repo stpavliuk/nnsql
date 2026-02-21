@@ -46,8 +46,8 @@ public record DDLTranslator(SchemaRegistry schemaRegistry) implements Translator
 
         var stmts = new ArrayList<String>();
         var idType = pkColumn
-                .map(pk -> columnTypes.getOrDefault(pk, Format.VARCHAR_64))
-                .orElse(Format.VARCHAR_64);
+                .map(pk -> columnTypes.getOrDefault(pk, Format.GENERATED_ID_TYPE))
+                .orElse(Format.GENERATED_ID_TYPE);
 
         stmts.add(Format.idTable(tableName, idType));
         for (var col : columns) {

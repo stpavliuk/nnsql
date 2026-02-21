@@ -13,7 +13,7 @@ import java.sql.*;
 
 public class TranslatedDbExtension implements BeforeAllCallback, AfterAllCallback, ParameterResolver {
 
-    private static final double SCALE_FACTOR = 0.01;
+    private static final double SCALE_FACTOR = 0.001;
     private static final String DB_DIR_PROPERTY = "nnsql.tpch.dbDir";
     private static final String SOURCE_DB_FILE = "source.duckdb";
     private static final String TARGET_DB_FILE = "target.duckdb";

@@ -1,7 +1,7 @@
 package nnsql.ddl;
 
 final class Format {
-    public static final String VARCHAR_64 = "VARCHAR(64)";
+    public static final String GENERATED_ID_TYPE = "UHUGEINT";
 
     private Format() {}
 

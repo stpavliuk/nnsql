@@ -8,6 +8,8 @@ import net.sf.jsqlparser.statement.insert.Insert;
 import nnsql.Translator;
 import nnsql.query.SchemaRegistry;
 
+import java.nio.charset.StandardCharsets;
+import java.math.BigInteger;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -127,19 +129,15 @@ public record DMLTranslator(SchemaRegistry schemaRegistry) implements Translator
                 .collect(Collectors.joining(","));
 
             var hashWithIndex = hashInput + "_row" + rowIndex;
-            return "'" + hashString(hashWithIndex) + "'";
+            return Format.generatedId(hashString(hashWithIndex));
         }
     }
 
     private String hashString(String input) {
         try {
             var md = java.security.MessageDigest.getInstance("MD5");
-            var digest = md.digest(input.getBytes());
-            var sb = new StringBuilder();
-            for (byte b : digest) {
-                sb.append(String.format("%02x", b));
-            }
-            return sb.toString();
+            var digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            return new BigInteger(1, digest).toString();
         } catch (Exception e) {
             throw new RuntimeException("Error generating hash", e);
         }

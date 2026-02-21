@@ -16,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 @Tag("integration")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class TpchSqliteQueriesTest {
+    private static final boolean LOG_QUERIES = Boolean.getBoolean("nnsql.tpch.logQueries");
     private TranslatedDbEnvironment env;
 
     @BeforeAll
@@ -149,9 +150,31 @@ class TpchSqliteQueriesTest {
                 "Translation failed for %s: %s".formatted(queryName, e.getMessage()), e);
         }
 
+        if (LOG_QUERIES) {
+            System.out.println("==== " + queryName + " original query ====");
+            System.out.println(query);
+            System.out.println("==== " + queryName + " translated query ====");
+            System.out.println(translated);
+        }
+
         var expected = env.source().execute(query);
         var actual = env.target().execute(translated);
-        ResultSetComparator.assertResultsMatch(expected, actual, queryName, orderSensitive);
+        try {
+            ResultSetComparator.assertResultsMatch(expected, actual, queryName, orderSensitive);
+        } catch (AssertionError e) {
+            throw new AssertionError(
+                e.getMessage()
+                    + System.lineSeparator()
+                    + "Original query:"
+                    + System.lineSeparator()
+                    + query
+                    + System.lineSeparator()
+                    + "Translated query:"
+                    + System.lineSeparator()
+                    + translated,
+                e
+            );
+        }
     }
 
     private static void assertQueryAvailable(String queryName, String query) {

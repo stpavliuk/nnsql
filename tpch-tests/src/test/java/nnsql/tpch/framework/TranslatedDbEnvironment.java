@@ -8,7 +8,7 @@ import java.util.*;
 
 public class TranslatedDbEnvironment implements AutoCloseable {
 
-    private static final int QUERY_TIMEOUT_SECONDS = 30;
+    private static final int QUERY_TIMEOUT_SECONDS = 60;
 
     private final Connection sourceConn;
     private final Connection targetConn;

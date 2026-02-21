@@ -11,4 +11,8 @@ final class Format {
         return "INSERT INTO %s_%s (id, v) VALUES (%s, %s)"
             .formatted(tableName, attributeName, idValue, attributeValue);
     }
+
+    static String generatedId(String unsignedValue) {
+        return unsignedValue;
+    }
 }

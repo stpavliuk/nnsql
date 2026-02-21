@@ -8,12 +8,13 @@ import org.apache.commons.csv.CSVRecord;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.List;
 
 public class DataTranslator {
@@ -101,7 +102,7 @@ public class DataTranslator {
             sb.append(headers.get(i)).append("=").append(values.get(i));
         }
         sb.append("_row").append(rowIndex);
-        return md5(sb.toString());
+        return md5UnsignedIntLiteral(sb.toString());
     }
 
     private static boolean isNullOrEmpty(String value) {
@@ -114,10 +115,11 @@ public class DataTranslator {
         return OUTPUT_CSV.print(Files.newBufferedWriter(path));
     }
 
-    private static String md5(String input) {
+    private static String md5UnsignedIntLiteral(String input) {
         try {
             var md = MessageDigest.getInstance("MD5");
-            return HexFormat.of().formatHex(md.digest(input.getBytes()));
+            var digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            return new BigInteger(1, digest).toString();
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("MD5 algorithm is unavailable", e);
         }
