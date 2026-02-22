@@ -859,6 +859,18 @@ class QueryTranslationTest {
         ));
         assertTrue(sumMulSql.contains("SUM(product_0_R_A.v * product_0_R_B.v)"));
         assertTrue(sumMulSql.contains("group_1_revenue"));
+
+        var sumNestedSql = normalizeWhitespace(translator.translate(
+            "SELECT SUM(R.A * (1 - R.B)) AS revenue FROM R"
+        ));
+        assertTrue(sumNestedSql.contains("SUM(product_0_R_A.v * (1.0 - product_0_R_B.v))"));
+
+        var sumChainedSql = normalizeWhitespace(translator.translate(
+            "SELECT SUM(R.A * (1 - R.B) * (1 + R.B)) AS charge FROM R"
+        ));
+        assertTrue(sumChainedSql.contains(
+            "SUM(product_0_R_A.v * (1.0 - product_0_R_B.v) * (1.0 + product_0_R_B.v))"
+        ));
     }
 
     @Test

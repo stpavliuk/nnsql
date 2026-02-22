@@ -112,8 +112,7 @@ final class ExpressionSqlRenderer {
         return switch (expr) {
             case IRExpression.ColumnRef(var col) -> column(attrTable(baseName, col), "v");
             case IRExpression.Literal lit -> literal(lit);
-            case IRExpression.BinaryOp(var left, var op, var right) ->
-                arithmetic(toSqlExpr(left, baseName), op.toSql(), toSqlExpr(right, baseName));
+            case IRExpression.BinaryOp binaryOp -> renderBinaryOp(binaryOp, baseName);
             case IRExpression.Cast(var inner, var targetType) ->
                 new CastExpression("CAST", toSqlExpr(inner, baseName), targetType);
             case IRExpression.FunctionCall(var name, var arguments) ->
@@ -137,6 +136,52 @@ final class ExpressionSqlRenderer {
             }
             case IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->
                 throw new UnsupportedOperationException("Unsupported expression in SQL rendering");
+        };
+    }
+
+    private static Expression renderBinaryOp(IRExpression.BinaryOp binaryOp, String baseName) {
+        var left = toSqlExpr(binaryOp.left(), baseName);
+        var right = toSqlExpr(binaryOp.right(), baseName);
+
+        if (needsParentheses(binaryOp.operator(), binaryOp.left(), false)) {
+            left = paren(left);
+        }
+        if (needsParentheses(binaryOp.operator(), binaryOp.right(), true)) {
+            right = paren(right);
+        }
+
+        return arithmetic(left, binaryOp.operator().toSql(), right);
+    }
+
+    private static boolean needsParentheses(IRExpression.ArithmeticOperator parentOperator,
+                                            IRExpression childExpression,
+                                            boolean isRightChild) {
+        if (!(childExpression instanceof IRExpression.BinaryOp(_, var childOperator, _))) {
+            return false;
+        }
+
+        var parentPrecedence = precedence(parentOperator);
+        var childPrecedence = precedence(childOperator);
+
+        if (childPrecedence < parentPrecedence) {
+            return true;
+        }
+        if (childPrecedence > parentPrecedence || !isRightChild) {
+            return false;
+        }
+
+        return switch (parentOperator) {
+            case IRExpression.Add _ -> false;
+            case IRExpression.Subtract _ -> true;
+            case IRExpression.Multiply _ -> childOperator instanceof IRExpression.Divide;
+            case IRExpression.Divide _ -> true;
+        };
+    }
+
+    private static int precedence(IRExpression.ArithmeticOperator operator) {
+        return switch (operator) {
+            case IRExpression.Add _, IRExpression.Subtract _ -> 1;
+            case IRExpression.Multiply _, IRExpression.Divide _ -> 2;
         };
     }
 }
