@@ -20,6 +20,15 @@
     .report-card {
       background: rgba(17, 24, 39, 0.82);
     }
+    .report-card > summary {
+      list-style: none;
+    }
+    .report-card > summary::-webkit-details-marker {
+      display: none;
+    }
+    .report-card > summary .card-header {
+      margin: 0;
+    }
     .report-card details + details {
       border-top: 1px solid rgba(255, 255, 255, 0.12);
     }
@@ -120,16 +129,18 @@
     </section>
 
     {{#each entries}}
-      <section class="card border-{{statusClass}} shadow-sm report-card mb-3">
-        <header class="card-header d-flex justify-content-between align-items-center">
-          <h2 class="h5 mb-0">{{queryName}}</h2>
-          <span class="badge text-bg-{{statusClass}}">{{statusLabel}}</span>
-        </header>
-        <div class="small text-secondary px-3 py-2 border-bottom">
-          Order sensitive: <strong>{{orderSensitive}}</strong> -
-          Source rows: <strong>{{sourceRowCount}}</strong> -
-          Translated rows: <strong>{{translatedRowCount}}</strong>
-        </div>
+      <details class="card border-{{statusClass}} shadow-sm report-card mb-3">
+        <summary>
+          <header class="card-header d-flex justify-content-between align-items-center">
+            <h2 class="h5 mb-0">{{queryName}}</h2>
+            <span class="badge text-bg-{{statusClass}}">{{statusLabel}}</span>
+          </header>
+          <div class="small text-secondary px-3 py-2 border-bottom">
+            Order sensitive: <strong>{{orderSensitive}}</strong> -
+            Source rows: <strong>{{sourceRowCount}}</strong> -
+            Translated rows: <strong>{{translatedRowCount}}</strong>
+          </div>
+        </summary>
         {{#each sections}}
           <details{{#if detailsClass}} class="{{detailsClass}}"{{/if}}{{#if open}} open{{/if}}>
             <summary>{{title}}</summary>
@@ -163,7 +174,7 @@
             {{/if}}
           </details>
         {{/each}}
-      </section>
+      </details>
     {{/each}}
   </main>
 
