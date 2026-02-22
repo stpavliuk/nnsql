@@ -52,7 +52,7 @@ public sealed interface IRExpression {
         }
     }
 
-    record Aggregate(String function, IRExpression argument, String alias) implements IRExpression {
+    record Aggregate(String function, IRExpression argument, String alias, boolean distinct) implements IRExpression {
         public Aggregate {
             var validFunctions = Set.of("SUM", "AVG", "COUNT", "MIN", "MAX");
             if (!validFunctions.contains(function.toUpperCase())) {
@@ -62,11 +62,12 @@ public sealed interface IRExpression {
 
         @Override
         public String toString() {
-            return "%s(%s) AS %s".formatted(function, argument, alias);
+            var qualifier = distinct ? "DISTINCT " : "";
+            return "%s(%s%s) AS %s".formatted(function, qualifier, argument, alias);
         }
 
         public static Aggregate agg(String function, IRExpression argument, String alias) {
-            return new Aggregate(function.toUpperCase(), argument, alias);
+            return new Aggregate(function.toUpperCase(), argument, alias, false);
         }
     }
 

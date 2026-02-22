@@ -942,6 +942,15 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testCountDistinct() {
+        var groupedSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A, COUNT(DISTINCT R.B) AS cnt FROM R GROUP BY R.A"
+        ));
+        assertTrue(groupedSql.contains("COUNT(DISTINCT product_0_R_B.v)"));
+        assertTrue(groupedSql.contains("group_1_cnt"));
+    }
+
+    @Test
     void testArithmeticInHavingWithAggregateAlias() {
         var sql = normalizeWhitespace(translator.translate(
             "SELECT R.A, SUM(R.B) AS sum_b FROM R GROUP BY R.A HAVING sum_b * 2 > 10"

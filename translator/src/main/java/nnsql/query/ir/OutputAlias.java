@@ -13,7 +13,7 @@ public sealed interface OutputAlias permits
     }
 
     static OutputAlias aggregate(IRExpression.Aggregate aggregate) {
-        return new Aggregate(aggregate.function(), aggregate.argument());
+        return new Aggregate(aggregate.function(), aggregate.argument(), aggregate.distinct());
     }
 
     record Column(String name) implements OutputAlias {
@@ -30,10 +30,11 @@ public sealed interface OutputAlias permits
         }
     }
 
-    record Aggregate(String function, IRExpression argument) implements OutputAlias {
+    record Aggregate(String function, IRExpression argument, boolean distinct) implements OutputAlias {
         @Override
         public String toString() {
-            return function.toLowerCase() + "_" + argument;
+            var qualifier = distinct ? "distinct_" : "";
+            return function.toLowerCase() + "_" + qualifier + argument;
         }
     }
 }

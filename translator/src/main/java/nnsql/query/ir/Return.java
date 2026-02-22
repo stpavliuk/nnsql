@@ -51,7 +51,7 @@ public record Return(IRNode input, List<AttributeRef> selectedAttributes, boolea
         private static String deriveAlias(IRExpression source) {
             return switch (source) {
                 case IRExpression.ColumnRef(var col) -> col;
-                case IRExpression.Aggregate(_, _, var aggAlias) -> aggAlias;
+                case IRExpression.Aggregate(_, _, var aggAlias, _) -> aggAlias;
                 default -> throw new IllegalArgumentException("Expression requires an alias");
             };
         }

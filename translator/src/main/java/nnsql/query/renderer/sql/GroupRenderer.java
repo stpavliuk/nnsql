@@ -83,14 +83,30 @@ class GroupRenderer {
             var functionName = aggregate.function();
             var argument = aggregate.argument();
             var alias = aggregate.alias();
+            var distinct = aggregate.distinct();
 
             var columns = ExpressionSqlRenderer.collectColumns(argument);
 
             String definition;
             if (functionName.equals("COUNT")) {
-                definition = renderCountAggregate(baseName, inputBaseName, argument, columns, groupingAttrs);
+                definition = renderCountAggregate(
+                    baseName,
+                    inputBaseName,
+                    argument,
+                    columns,
+                    groupingAttrs,
+                    distinct
+                );
             } else {
-                definition = buildAggregateSelect(baseName, inputBaseName, argument, columns, functionName, groupingAttrs)
+                definition = buildAggregateSelect(
+                    baseName,
+                    inputBaseName,
+                    argument,
+                    columns,
+                    functionName,
+                    groupingAttrs,
+                    distinct
+                )
                     .toString();
             }
 
@@ -100,7 +116,7 @@ class GroupRenderer {
 
     private PlainSelect buildAggregateSelect(String baseName, String inputBaseName, IRExpression argument,
                                               List<String> columns, String functionName,
-                                              List<String> groupingAttrs) {
+                                              List<String> groupingAttrs, boolean distinct) {
         boolean hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(argument);
 
         var baseIdTbl = table(idTable(baseName));
@@ -109,8 +125,10 @@ class GroupRenderer {
         var ps = new PlainSelect();
         ps.addSelectItem(column(baseIdTbl, "id"));
         var argumentExpr = ExpressionSqlRenderer.toSqlExpr(argument, inputBaseName);
+        var aggregateFunction = fn(functionName, argumentExpr);
+        aggregateFunction.setDistinct(distinct);
         ps.addSelectItem(
-            fn(functionName, argumentExpr),
+            aggregateFunction,
             new Alias("v", true)
         );
         ps.setFromItem(baseIdTbl);
@@ -156,10 +174,19 @@ class GroupRenderer {
     }
 
     private String renderCountAggregate(String baseName, String inputBaseName, IRExpression argument,
-                                         List<String> columns, List<String> groupingAttrs) {
+                                         List<String> columns, List<String> groupingAttrs,
+                                         boolean distinct) {
         boolean hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(argument);
 
-        var countSelect = buildAggregateSelect(baseName, inputBaseName, argument, columns, "COUNT", groupingAttrs);
+        var countSelect = buildAggregateSelect(
+            baseName,
+            inputBaseName,
+            argument,
+            columns,
+            "COUNT",
+            groupingAttrs,
+            distinct
+        );
 
         var baseIdTbl = table(idTable(baseName));
         var inputIdTbl = tableAlias(idTable(inputBaseName), "input_id");

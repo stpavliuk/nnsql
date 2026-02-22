@@ -221,7 +221,7 @@ public class IRBuilder {
                 && !(fn.getParameters().getFirst() instanceof AllColumns)
             ? toExpression(fn.getParameters().getFirst())
             : IRExpression.number(1);
-        return new IRExpression.Aggregate(functionName, argument, alias);
+        return new IRExpression.Aggregate(functionName, argument, alias, fn.isDistinct());
     }
 
     private IRExpression.FunctionCall toFunctionCall(Function fn) {
@@ -593,7 +593,12 @@ public class IRBuilder {
                 );
 
                 var qualifiedArgument = qualifyAggregateArgument(argument, availableAttrs);
-                aggregates.add(new IRExpression.Aggregate(baseAggregate.function(), qualifiedArgument, alias));
+                aggregates.add(new IRExpression.Aggregate(
+                    baseAggregate.function(),
+                    qualifiedArgument,
+                    alias,
+                    baseAggregate.distinct()
+                ));
             }
         }
 
