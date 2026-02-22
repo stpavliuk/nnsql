@@ -4,6 +4,7 @@ import nnsql.tpch.framework.ResultSetComparator;
 import nnsql.tpch.framework.TPCHQueryTest;
 import nnsql.tpch.framework.TranslatedDbEnvironment;
 import nnsql.tpch.framework.TranslatedDbExtension;
+import nnsql.tpch.framework.TpchHtmlReport;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestInstance;
@@ -17,6 +18,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class TpchSqliteQueriesTest {
     private static final boolean LOG_QUERIES = Boolean.getBoolean("nnsql.tpch.logQueries");
+    private static final boolean INCLUDE_QUERIES_IN_FAILURE =
+        LOG_QUERIES || Boolean.getBoolean("nnsql.tpch.includeQueriesInFailure");
     private TranslatedDbEnvironment env;
 
     @BeforeAll
@@ -142,43 +145,83 @@ class TpchSqliteQueriesTest {
         assertNotNull(env, "TranslatedDbEnvironment was not initialized");
         assertQueryAvailable(queryName, query);
 
-        String translated;
-        try {
-            translated = env.translator().translate(query);
-        } catch (Exception e) {
-            throw new RuntimeException(
-                "Translation failed for %s: %s".formatted(queryName, e.getMessage()), e);
-        }
+        String translated = null;
+        TranslatedDbEnvironment.QueryExecution sourceExecution = null;
+        TranslatedDbEnvironment.QueryExecution translatedExecution = null;
+        String failureMessage = null;
+        boolean success = false;
 
-        if (LOG_QUERIES) {
-            System.out.println("==== " + queryName + " original query ====");
-            System.out.println(query);
-            System.out.println("==== " + queryName + " translated query ====");
-            System.out.println(translated);
-        }
-
-        var expected = env.source().execute(query);
-        var actual = env.target().execute(translated);
         try {
-            ResultSetComparator.assertResultsMatch(expected, actual, queryName, orderSensitive);
-        } catch (AssertionError e) {
-            throw new AssertionError(
-                e.getMessage()
-                    + System.lineSeparator()
-                    + "Original query:"
-                    + System.lineSeparator()
-                    + query
-                    + System.lineSeparator()
-                    + "Translated query:"
-                    + System.lineSeparator()
-                    + translated,
-                e
+            try {
+                translated = env.translator().translate(query);
+            } catch (Exception e) {
+                failureMessage = "Translation failed for %s: %s".formatted(queryName, e.getMessage());
+                throw new RuntimeException(failureMessage, e);
+            }
+
+            if (LOG_QUERIES) {
+                System.out.println("==== " + queryName + " original query ====");
+                System.out.println(query);
+                System.out.println("==== " + queryName + " translated query ====");
+                System.out.println(translated);
+            }
+
+            sourceExecution = env.source().executeWithDiagnostics(query);
+            translatedExecution = env.target().executeWithDiagnostics(translated);
+
+            ResultSetComparator.assertResultsMatch(
+                sourceExecution.rows(),
+                translatedExecution.rows(),
+                queryName,
+                orderSensitive
             );
+            success = true;
+        } catch (AssertionError e) {
+            failureMessage = assertionWithQueries(e.getMessage(), query, translated);
+            throw new AssertionError(failureMessage, e);
+        } catch (Exception e) {
+            if (failureMessage == null || failureMessage.isBlank()) {
+                failureMessage = e.getMessage();
+            }
+            throw e;
+        } finally {
+            TpchHtmlReport.record(new TpchHtmlReport.QueryReportEntry(
+                queryName,
+                orderSensitive,
+                query,
+                sourceExecution == null ? null : sourceExecution.executionTimeMs(),
+                sourceExecution == null ? null : sourceExecution.explainPlan(),
+                sourceExecution == null ? null : sourceExecution.explainHtml(),
+                sourceExecution == null ? null : sourceExecution.rows().size(),
+                translated,
+                translatedExecution == null ? null : translatedExecution.executionTimeMs(),
+                translatedExecution == null ? null : translatedExecution.explainPlan(),
+                translatedExecution == null ? null : translatedExecution.explainHtml(),
+                translatedExecution == null ? null : translatedExecution.rows().size(),
+                success,
+                failureMessage
+            ));
         }
     }
 
     private static void assertQueryAvailable(String queryName, String query) {
         assertNotNull(query, "Query must not be null for " + queryName);
         assertFalse(query.isBlank(), "Query must not be blank for " + queryName);
+    }
+
+    private static String assertionWithQueries(String message, String query, String translated) {
+        if (!INCLUDE_QUERIES_IN_FAILURE) {
+            return message;
+        }
+        var translatedSql = translated == null ? "(not available)" : translated;
+        return message
+            + System.lineSeparator()
+            + "Original query:"
+            + System.lineSeparator()
+            + query
+            + System.lineSeparator()
+            + "Translated query:"
+            + System.lineSeparator()
+            + translatedSql;
     }
 }

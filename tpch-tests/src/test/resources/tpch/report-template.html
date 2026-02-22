@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TPCH Query Report</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css">
+  <style>
+    body {
+      background:
+        radial-gradient(circle at 10% 10%, rgba(56, 189, 248, 0.10), transparent 30%),
+        radial-gradient(circle at 90% 10%, rgba(34, 197, 94, 0.08), transparent 30%),
+        #0f172a;
+    }
+    .report-summary {
+      backdrop-filter: blur(6px);
+      background: rgba(17, 24, 39, 0.90);
+    }
+    .report-card {
+      background: rgba(17, 24, 39, 0.82);
+    }
+    .report-card details + details {
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    .report-card summary {
+      cursor: pointer;
+      padding: 0.75rem 1rem;
+      color: #7dd3fc;
+      font-weight: 600;
+      user-select: none;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .report-card summary:hover {
+      background: rgba(56, 189, 248, 0.08);
+    }
+    .report-card pre {
+      margin: 0;
+      padding: 1rem;
+      font-size: 0.78rem;
+      line-height: 1.45;
+      white-space: pre;
+      overflow-x: auto;
+      overflow-y: hidden;
+      word-break: normal;
+      overflow-wrap: normal;
+      background: rgba(0, 0, 0, 0.32);
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .report-card code.language-sql {
+      display: block;
+    }
+    .report-card details.failure pre {
+      color: #fecaca;
+    }
+    .report-card .tree-pane {
+      padding: 0.75rem 1rem 1rem;
+      background: rgba(0, 0, 0, 0.24);
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .report-card .tree-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.5rem;
+    }
+    .report-card .tree-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .report-card .tree-zoom-label {
+      min-width: 3.2rem;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+    .report-card .tree-iframe {
+      width: 100%;
+      min-height: 420px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 0.5rem;
+      background: #ffffff;
+    }
+    .report-card .tree-pane:fullscreen {
+      padding: 0.5rem;
+      background: #0b1020;
+    }
+    .report-card .tree-pane:fullscreen .tree-toolbar {
+      position: fixed;
+      top: 0.75rem;
+      left: 0.75rem;
+      right: 0.75rem;
+      z-index: 10;
+      margin-bottom: 0;
+    }
+    .report-card .tree-pane:fullscreen .tree-iframe {
+      min-height: calc(100vh - 1rem);
+      height: calc(100vh - 1rem);
+      border: 0;
+      border-radius: 0.25rem;
+    }
+  </style>
+</head>
+<body>
+  <main class="container py-4 py-md-5">
+    <section class="card shadow-sm border-secondary report-summary mb-3">
+      <div class="card-body">
+        <h1 class="h3 mb-2">TPCH Translation Query Report</h1>
+        <p class="small text-secondary mb-3">
+          Generated at {{generatedAt}} - File: {{reportPath}}
+        </p>
+        <div class="d-flex flex-wrap gap-2">
+          <span class="badge rounded-pill text-bg-secondary px-3 py-2">Total: {{total}}</span>
+          <span class="badge rounded-pill text-bg-success px-3 py-2">Passed: {{passed}}</span>
+          <span class="badge rounded-pill text-bg-danger px-3 py-2">Failed: {{failed}}</span>
+        </div>
+      </div>
+    </section>
+
+    {{#each entries}}
+      <section class="card border-{{statusClass}} shadow-sm report-card mb-3">
+        <header class="card-header d-flex justify-content-between align-items-center">
+          <h2 class="h5 mb-0">{{queryName}}</h2>
+          <span class="badge text-bg-{{statusClass}}">{{statusLabel}}</span>
+        </header>
+        <div class="small text-secondary px-3 py-2 border-bottom">
+          Order sensitive: <strong>{{orderSensitive}}</strong> -
+          Source rows: <strong>{{sourceRowCount}}</strong> -
+          Translated rows: <strong>{{translatedRowCount}}</strong>
+        </div>
+        {{#each sections}}
+          <details{{#if detailsClass}} class="{{detailsClass}}"{{/if}}{{#if open}} open{{/if}}>
+            <summary>{{title}}</summary>
+            {{#if iframeSrc}}
+              <div class="tree-pane">
+                <div class="tree-toolbar">
+                  <div class="tree-controls">
+                    <button type="button" class="btn btn-sm btn-outline-secondary tree-zoom-out">-</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary tree-zoom-in">+</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary tree-zoom-reset">Reset</button>
+                    <span class="badge text-bg-secondary tree-zoom-label">78%</span>
+                  </div>
+                  <button type="button" class="btn btn-sm btn-outline-info tree-fullscreen-btn">Fullscreen</button>
+                </div>
+                <iframe
+                  class="tree-iframe"
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  allowfullscreen
+                  allow="fullscreen"
+                  sandbox="allow-same-origin allow-scripts"
+                  src="{{{iframeSrc}}}"
+                  title="{{title}}"></iframe>
+              </div>
+            {{else}}
+              {{#if sqlContent}}
+                <pre><code class="language-sql" data-lang="sql">{{content}}</code></pre>
+              {{else}}
+                <pre>{{content}}</pre>
+              {{/if}}
+            {{/if}}
+          </details>
+        {{/each}}
+      </section>
+    {{/each}}
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/sql-formatter@15.6.10/dist/sql-formatter.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+  <script>
+    (() => {
+      const sqlFormatterApi = window.sqlFormatter && typeof window.sqlFormatter.format === "function"
+        ? window.sqlFormatter
+        : null;
+      const sqlBlocks = document.querySelectorAll("code[data-lang='sql']");
+      for (const block of sqlBlocks) {
+        const rawSql = block.textContent || "";
+        try {
+          if (sqlFormatterApi) {
+            block.textContent = sqlFormatterApi.format(rawSql, {
+              language: "duckdb",
+              keywordCase: "upper",
+              linesBetweenQueries: 1
+            });
+          }
+        } catch (_) {
+        }
+        if (window.hljs && typeof window.hljs.highlightElement === "function") {
+          window.hljs.highlightElement(block);
+        }
+      }
+
+      const DEFAULT_ZOOM = 0.78;
+      const MIN_ZOOM = 0.35;
+      const MAX_ZOOM = 2.00;
+      const ZOOM_STEP = 0.08;
+      const treePanes = document.querySelectorAll(".tree-pane");
+
+      const clampZoom = (value) => {
+        if (!Number.isFinite(value)) {
+          return DEFAULT_ZOOM;
+        }
+        return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
+      };
+
+      const readZoom = (pane) => clampZoom(Number.parseFloat(pane.dataset.zoom || `${DEFAULT_ZOOM}`));
+
+      const updateZoomLabel = (pane, zoom) => {
+        pane.dataset.zoom = zoom.toFixed(2);
+        const label = pane.querySelector(".tree-zoom-label");
+        if (label) {
+          label.textContent = `${Math.round(zoom * 100)}%`;
+        }
+      };
+
+      const sendZoom = (pane, zoom) => {
+        const iframe = pane.querySelector(".tree-iframe");
+        if (!iframe || !iframe.contentWindow) {
+          return;
+        }
+        iframe.contentWindow.postMessage({
+          type: "nnsql-tree-zoom",
+          zoom
+        }, "*");
+      };
+
+      const applyZoom = (pane, zoom) => {
+        const normalized = clampZoom(zoom);
+        updateZoomLabel(pane, normalized);
+        sendZoom(pane, normalized);
+      };
+
+      for (const pane of treePanes) {
+        updateZoomLabel(pane, DEFAULT_ZOOM);
+
+        const zoomOut = pane.querySelector(".tree-zoom-out");
+        const zoomIn = pane.querySelector(".tree-zoom-in");
+        const zoomReset = pane.querySelector(".tree-zoom-reset");
+        const iframe = pane.querySelector(".tree-iframe");
+
+        zoomOut?.addEventListener("click", () => applyZoom(pane, readZoom(pane) - ZOOM_STEP));
+        zoomIn?.addEventListener("click", () => applyZoom(pane, readZoom(pane) + ZOOM_STEP));
+        zoomReset?.addEventListener("click", () => applyZoom(pane, DEFAULT_ZOOM));
+        iframe?.addEventListener("load", () => sendZoom(pane, readZoom(pane)));
+      }
+
+      window.addEventListener("message", (event) => {
+        const data = event.data;
+        if (!data || (data.type !== "nnsql-tree-ready" && data.type !== "nnsql-tree-zoom-state")) {
+          return;
+        }
+
+        const reportedZoom = clampZoom(
+          typeof data.zoom === "number" ? data.zoom : Number.parseFloat(data.zoom)
+        );
+
+        for (const pane of treePanes) {
+          const iframe = pane.querySelector(".tree-iframe");
+          if (iframe && iframe.contentWindow === event.source) {
+            updateZoomLabel(pane, reportedZoom);
+            break;
+          }
+        }
+      });
+
+      const fullscreenButtons = document.querySelectorAll(".tree-fullscreen-btn");
+      for (const button of fullscreenButtons) {
+        button.addEventListener("click", () => {
+          const pane = button.closest(".tree-pane");
+          if (!pane) {
+            return;
+          }
+          if (document.fullscreenElement === pane) {
+            document.exitFullscreen();
+            return;
+          }
+          pane.requestFullscreen();
+        });
+      }
+
+      document.addEventListener("fullscreenchange", () => {
+        for (const button of fullscreenButtons) {
+          const pane = button.closest(".tree-pane");
+          button.textContent = document.fullscreenElement === pane ? "Exit Fullscreen" : "Fullscreen";
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
