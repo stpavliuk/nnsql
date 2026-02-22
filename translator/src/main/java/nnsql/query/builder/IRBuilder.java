@@ -13,8 +13,10 @@ import nnsql.query.ir.*;
 import nnsql.query.ir.Return.AttributeRef;
 import nnsql.util.Option;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,6 +27,8 @@ public class IRBuilder {
     private final SchemaRegistry schema;
     private final AtomicInteger nodeIdCounter = new AtomicInteger(0);
     private final Map<String, Relation.Subquery> cteDefinitions = new LinkedHashMap<>();
+    private final ArrayDeque<List<String>> scopeStack = new ArrayDeque<>();
+    private final ArrayDeque<List<IRExpression.Correlation>> correlationCollectorStack = new ArrayDeque<>();
 
     private static final Set<String> AGGREGATE_FUNCTIONS =
         Set.of("COUNT", "SUM", "AVG", "MIN", "MAX");
@@ -35,6 +39,8 @@ public class IRBuilder {
 
     public IRNode build(PlainSelect select) {
         cteDefinitions.clear();
+        scopeStack.clear();
+        correlationCollectorStack.clear();
 
         if (select.getWithItemsList() != null) {
             for (var withItem : select.getWithItemsList()) {
@@ -54,52 +60,85 @@ public class IRBuilder {
 
         var relations = extractRelations(select);
         pipeline = pipeline.product(relations);
+        var availableAttrs = AttributeResolver.collectFrom(pipeline.build());
 
-        if (select.getWhere() != null) {
-            var attributes = AttributeResolver.collectFrom(pipeline.build());
-            var condition = toCondition(select.getWhere());
-            var qualifiedCondition = AttributeResolver.qualifyCondition(condition, attributes);
-            pipeline = pipeline.filter(qualifiedCondition, attributes);
-        }
+        scopeStack.push(availableAttrs);
+        try {
+            var correlations = new ArrayList<IRExpression.Correlation>();
 
-        boolean hasAggregates = hasAggregatesInSelect(select);
-        boolean hasGroupBy = select.getGroupBy() != null;
+            if (select.getWhere() != null) {
+                var condition = toCondition(select.getWhere());
+                var whereSplit = splitCorrelations(condition, availableAttrs, outerScopeAttributes());
+                correlations.addAll(whereSplit.correlations());
 
-        if (hasGroupBy || hasAggregates) {
-            pipeline = addGroupBy(select, pipeline);
-        }
-
-        if (select.getHaving() != null) {
-            var attributes = AttributeResolver.collectFrom(pipeline.build());
-            var condition = toCondition(select.getHaving());
-            var qualifiedCondition = AttributeResolver.qualifyCondition(condition, attributes);
-            pipeline = pipeline.aggFilter(qualifiedCondition, attributes);
-        }
-
-        if (hasGroupBy || hasAggregates) {
-            pipeline = buildReturnForGroupBy(select, pipeline);
-        } else {
-            pipeline = buildReturnForNonGroupBy(select, pipeline);
-        }
-
-        if (select.getDistinct() != null) {
-            var attributes = AttributeResolver.collectFrom(pipeline.build());
-            pipeline = pipeline.duplElim(attributes);
-        }
-
-        if (topLevel) {
-            var sortKeys = parseSortKeys(select, pipeline);
-            var limit = parseLimit(select);
-            if (!sortKeys.isEmpty() || limit != null) {
-                pipeline = pipeline.sort(sortKeys, limit);
+                if (whereSplit.localCondition().isSome()) {
+                    var qualifiedCondition = AttributeResolver.qualifyCondition(
+                        whereSplit.localCondition().get(),
+                        availableAttrs
+                    );
+                    pipeline = pipeline.filter(qualifiedCondition, availableAttrs);
+                }
             }
-        } else if ((select.getOrderByElements() != null && !select.getOrderByElements().isEmpty())
-            || select.getLimit() != null) {
-            throw new UnsupportedOperationException(
-                "ORDER BY/LIMIT in subqueries or CTEs is not supported");
-        }
 
-        return pipeline.build();
+            boolean hasAggregates = hasAggregatesInSelect(select);
+            boolean hasGroupBy = select.getGroupBy() != null;
+            var deduplicatedCorrelations = deduplicateCorrelations(correlations);
+
+            if (!deduplicatedCorrelations.isEmpty()) {
+                if (correlationCollectorStack.isEmpty()) {
+                    throw new UnsupportedOperationException(
+                        "Correlated subqueries are currently supported only for scalar subquery comparisons"
+                    );
+                }
+                if (!hasAggregates) {
+                    throw new UnsupportedOperationException(
+                        "Correlated scalar subqueries without aggregates are not supported"
+                    );
+                }
+                correlationCollectorStack.peek().addAll(deduplicatedCorrelations);
+            }
+
+            if (hasGroupBy || hasAggregates) {
+                var correlationGroupingAttrs = deduplicatedCorrelations.stream()
+                    .map(IRExpression.Correlation::innerAttribute)
+                    .toList();
+                pipeline = addGroupBy(select, pipeline, correlationGroupingAttrs);
+            }
+
+            if (select.getHaving() != null) {
+                var attributes = AttributeResolver.collectFrom(pipeline.build());
+                var condition = toCondition(select.getHaving());
+                var qualifiedCondition = AttributeResolver.qualifyCondition(condition, attributes);
+                pipeline = pipeline.aggFilter(qualifiedCondition, attributes);
+            }
+
+            if (hasGroupBy || hasAggregates) {
+                pipeline = buildReturnForGroupBy(select, pipeline);
+            } else {
+                pipeline = buildReturnForNonGroupBy(select, pipeline);
+            }
+
+            if (select.getDistinct() != null) {
+                var attributes = AttributeResolver.collectFrom(pipeline.build());
+                pipeline = pipeline.duplElim(attributes);
+            }
+
+            if (topLevel) {
+                var sortKeys = parseSortKeys(select, pipeline);
+                var limit = parseLimit(select);
+                if (!sortKeys.isEmpty() || limit != null) {
+                    pipeline = pipeline.sort(sortKeys, limit);
+                }
+            } else if ((select.getOrderByElements() != null && !select.getOrderByElements().isEmpty())
+                || select.getLimit() != null) {
+                throw new UnsupportedOperationException(
+                    "ORDER BY/LIMIT in subqueries or CTEs is not supported");
+            }
+
+            return pipeline.build();
+        } finally {
+            scopeStack.pop();
+        }
     }
 
     private List<Relation> extractRelations(PlainSelect select) {
@@ -250,10 +289,65 @@ public class IRBuilder {
     }
 
     private IRExpression.ScalarSubquery toScalarSubquery(ParenthesedSelect ps) {
-        var subqueryIR = buildSelect((PlainSelect) ps.getSelect(), false);
-        var pipeline = new ArrayList<IRNode>();
-        pipeline.addFirst(subqueryIR);
-        return new IRExpression.ScalarSubquery(pipeline);
+        var correlations = new ArrayList<IRExpression.Correlation>();
+        correlationCollectorStack.push(correlations);
+        try {
+            var fullSubqueryIR = buildSelect((PlainSelect) ps.getSelect(), false);
+            var deduplicatedCorrelations = deduplicateCorrelations(correlations);
+
+            var rootNode = deduplicatedCorrelations.isEmpty()
+                ? fullSubqueryIR
+                : findGroupNode(fullSubqueryIR).orElseThrow(() -> new UnsupportedOperationException(
+                    "Correlated scalar subqueries require an aggregate projection"
+                ));
+
+            var valueAttribute = deduplicatedCorrelations.isEmpty()
+                ? Option.<String>none()
+                : extractScalarSubqueryValueAttribute(fullSubqueryIR);
+
+            var pipeline = new ArrayList<IRNode>();
+            pipeline.addFirst(rootNode);
+            return new IRExpression.ScalarSubquery(
+                pipeline,
+                deduplicatedCorrelations,
+                valueAttribute
+            );
+        } finally {
+            correlationCollectorStack.pop();
+        }
+    }
+
+    private Option<Group> findGroupNode(IRNode node) {
+        return switch (node) {
+            case Group g -> Option.some(g);
+            case Sort s -> findGroupNode(s.input());
+            case DuplElim d -> findGroupNode(d.input());
+            case Return r -> findGroupNode(r.input());
+            case AggFilter af -> findGroupNode(af.input());
+            case Filter f -> findGroupNode(f.input());
+            case Product _ -> Option.none();
+        };
+    }
+
+    private Option<String> extractScalarSubqueryValueAttribute(IRNode subqueryRoot) {
+        return switch (findReturnNode(subqueryRoot)) {
+            case Option.Some(var returnNode) when !returnNode.selectStar()
+                && returnNode.selectedAttributes().size() == 1 ->
+                Option.some(returnNode.selectedAttributes().getFirst().alias());
+            default -> Option.none();
+        };
+    }
+
+    private Option<Return> findReturnNode(IRNode node) {
+        return switch (node) {
+            case Return r -> Option.some(r);
+            case Sort s -> findReturnNode(s.input());
+            case DuplElim d -> findReturnNode(d.input());
+            case AggFilter af -> findReturnNode(af.input());
+            case Group g -> findReturnNode(g.input());
+            case Filter f -> findReturnNode(f.input());
+            case Product _ -> Option.none();
+        };
     }
 
     Condition toCondition(Expression expr) {
@@ -387,6 +481,266 @@ public class IRBuilder {
     }
 
     private record InRightExpression(Expression payload, List<Expression> trailingPredicates) {
+    }
+
+    private record CorrelationSplit(Option<Condition> localCondition, List<IRExpression.Correlation> correlations) {
+    }
+
+    private enum ResolvedScope {
+        NONE,
+        LOCAL,
+        OUTER,
+        MIXED,
+        UNRESOLVED
+    }
+
+    private record ResolvedColumnRef(String attribute, ResolvedScope scope) {
+    }
+
+    private List<String> outerScopeAttributes() {
+        if (scopeStack.size() <= 1) {
+            return List.of();
+        }
+
+        var attributes = new ArrayList<String>();
+        var iterator = scopeStack.iterator();
+        if (iterator.hasNext()) {
+            iterator.next();
+        }
+        while (iterator.hasNext()) {
+            attributes.addAll(iterator.next());
+        }
+        return attributes;
+    }
+
+    private CorrelationSplit splitCorrelations(
+        Condition condition,
+        List<String> localAttrs,
+        List<String> outerAttrs
+    ) {
+        if (outerAttrs.isEmpty()) {
+            return new CorrelationSplit(Option.some(condition), List.of());
+        }
+
+        var operands = flattenAndConditions(condition);
+        var localOperands = new ArrayList<Condition>();
+        var correlations = new ArrayList<IRExpression.Correlation>();
+
+        for (var operand : operands) {
+            if (tryExtractCorrelation(operand, localAttrs, outerAttrs)
+                .map(correlation -> {
+                    correlations.add(correlation);
+                    return true;
+                }).orElse(false)) {
+                continue;
+            }
+
+            if (usesOuterScope(operand, localAttrs, outerAttrs)) {
+                throw new UnsupportedOperationException(
+                    "Unsupported correlated predicate: " + operand
+                );
+            }
+            localOperands.add(operand);
+        }
+
+        Option<Condition> localCondition = switch (localOperands.size()) {
+            case 0 -> Option.none();
+            case 1 -> Option.some(localOperands.getFirst());
+            default -> Option.some((Condition) Condition.and(localOperands));
+        };
+
+        return new CorrelationSplit(localCondition, correlations);
+    }
+
+    private List<Condition> flattenAndConditions(Condition condition) {
+        return switch (condition) {
+            case Condition.And(var operands) -> operands.stream()
+                .flatMap(operand -> flattenAndConditions(operand).stream())
+                .toList();
+            default -> List.of(condition);
+        };
+    }
+
+    private Option<IRExpression.Correlation> tryExtractCorrelation(
+        Condition condition,
+        List<String> localAttrs,
+        List<String> outerAttrs
+    ) {
+        return switch (condition) {
+            case Condition.Comparison(
+                IRExpression.ColumnRef(var left),
+                IRExpression.ColumnRef(var right),
+                var operator
+            ) when "=".equals(operator) -> {
+                var resolvedLeft = resolveColumn(left, localAttrs, outerAttrs);
+                var resolvedRight = resolveColumn(right, localAttrs, outerAttrs);
+                if (resolvedLeft.scope() == ResolvedScope.LOCAL && resolvedRight.scope() == ResolvedScope.OUTER) {
+                    yield Option.some(new IRExpression.Correlation(
+                        resolvedRight.attribute(),
+                        resolvedLeft.attribute()
+                    ));
+                }
+                if (resolvedLeft.scope() == ResolvedScope.OUTER && resolvedRight.scope() == ResolvedScope.LOCAL) {
+                    yield Option.some(new IRExpression.Correlation(
+                        resolvedLeft.attribute(),
+                        resolvedRight.attribute()
+                    ));
+                }
+                yield Option.none();
+            }
+            default -> Option.none();
+        };
+    }
+
+    private boolean usesOuterScope(
+        Condition condition,
+        List<String> localAttrs,
+        List<String> outerAttrs
+    ) {
+        return switch (conditionScope(condition, localAttrs, outerAttrs)) {
+            case OUTER, MIXED -> true;
+            case NONE, LOCAL -> false;
+            case UNRESOLVED -> throw new IllegalArgumentException(
+                "Unable to resolve columns in correlated predicate: " + condition
+            );
+        };
+    }
+
+    private ResolvedScope conditionScope(
+        Condition condition,
+        List<String> localAttrs,
+        List<String> outerAttrs
+    ) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, _) ->
+                mergeScope(expressionScope(left, localAttrs, outerAttrs),
+                    expressionScope(right, localAttrs, outerAttrs));
+            case Condition.IsNull(var attr, _) ->
+                resolveScope(attr, localAttrs, outerAttrs);
+            case Condition.Like(var left, var pattern, _) ->
+                mergeScope(
+                    expressionScope(left, localAttrs, outerAttrs),
+                    expressionScope(pattern, localAttrs, outerAttrs)
+                );
+            case Condition.Exists(var subquery, _) ->
+                conditionScopeForSubquery(subquery, localAttrs, outerAttrs);
+            case Condition.InSubquery(_, var subquery, _) ->
+                conditionScopeForSubquery(subquery, localAttrs, outerAttrs);
+            case Condition.And(var operands) -> operands.stream()
+                .map(operand -> conditionScope(operand, localAttrs, outerAttrs))
+                .reduce(ResolvedScope.NONE, this::mergeScope);
+            case Condition.Or(var operands) -> operands.stream()
+                .map(operand -> conditionScope(operand, localAttrs, outerAttrs))
+                .reduce(ResolvedScope.NONE, this::mergeScope);
+            case Condition.Not(var operand) ->
+                conditionScope(operand, localAttrs, outerAttrs);
+        };
+    }
+
+    private ResolvedScope conditionScopeForSubquery(
+        IRNode subquery,
+        List<String> localAttrs,
+        List<String> outerAttrs
+    ) {
+        return AttributeResolver.collectFrom(subquery).stream()
+            .map(attr -> resolveScope(attr, localAttrs, outerAttrs))
+            .reduce(ResolvedScope.NONE, this::mergeScope);
+    }
+
+    private ResolvedScope expressionScope(
+        IRExpression expression,
+        List<String> localAttrs,
+        List<String> outerAttrs
+    ) {
+        return switch (expression) {
+            case IRExpression.ColumnRef(var attr) -> resolveScope(attr, localAttrs, outerAttrs);
+            case IRExpression.Literal _ -> ResolvedScope.NONE;
+            case IRExpression.BinaryOp(var left, _, var right) ->
+                mergeScope(
+                    expressionScope(left, localAttrs, outerAttrs),
+                    expressionScope(right, localAttrs, outerAttrs)
+                );
+            case IRExpression.Cast(var inner, _) ->
+                expressionScope(inner, localAttrs, outerAttrs);
+            case IRExpression.FunctionCall(_, var arguments) -> arguments.stream()
+                .map(argument -> expressionScope(argument, localAttrs, outerAttrs))
+                .reduce(ResolvedScope.NONE, this::mergeScope);
+            case IRExpression.CaseWhen(var whens, var elseExpr) -> {
+                var whenScope = whens.stream()
+                    .map(when -> mergeScope(
+                        conditionScope(when.condition(), localAttrs, outerAttrs),
+                        expressionScope(when.result(), localAttrs, outerAttrs)
+                    ))
+                    .reduce(ResolvedScope.NONE, this::mergeScope);
+                var elseScope = elseExpr.stream()
+                    .map(elseValue -> expressionScope(elseValue, localAttrs, outerAttrs))
+                    .reduce(ResolvedScope.NONE, this::mergeScope);
+                yield mergeScope(whenScope, elseScope);
+            }
+            case IRExpression.Aggregate(var _, var argument, _, _) ->
+                expressionScope(argument, localAttrs, outerAttrs);
+            case IRExpression.ScalarSubquery _ -> ResolvedScope.NONE;
+        };
+    }
+
+    private ResolvedColumnRef resolveColumn(
+        String attr,
+        List<String> localAttrs,
+        List<String> outerAttrs
+    ) {
+        return switch (resolveScope(attr, localAttrs, outerAttrs)) {
+            case LOCAL -> new ResolvedColumnRef(AttributeResolver.resolve(attr, localAttrs), ResolvedScope.LOCAL);
+            case OUTER -> new ResolvedColumnRef(AttributeResolver.resolve(attr, outerAttrs), ResolvedScope.OUTER);
+            case NONE -> new ResolvedColumnRef(attr, ResolvedScope.NONE);
+            case MIXED -> new ResolvedColumnRef(attr, ResolvedScope.MIXED);
+            case UNRESOLVED -> new ResolvedColumnRef(attr, ResolvedScope.UNRESOLVED);
+        };
+    }
+
+    private ResolvedScope resolveScope(
+        String attr,
+        List<String> localAttrs,
+        List<String> outerAttrs
+    ) {
+        var inLocal = canResolve(attr, localAttrs);
+        if (inLocal) {
+            return ResolvedScope.LOCAL;
+        }
+
+        var inOuter = canResolve(attr, outerAttrs);
+        if (inOuter) {
+            return ResolvedScope.OUTER;
+        }
+        return ResolvedScope.UNRESOLVED;
+    }
+
+    private boolean canResolve(String attr, List<String> availableAttrs) {
+        if (availableAttrs.contains(attr)) {
+            return true;
+        }
+
+        var suffix = "_" + attr;
+        return availableAttrs.stream().anyMatch(candidate -> candidate.endsWith(suffix));
+    }
+
+    private ResolvedScope mergeScope(ResolvedScope left, ResolvedScope right) {
+        if (left == ResolvedScope.UNRESOLVED || right == ResolvedScope.UNRESOLVED) {
+            return ResolvedScope.UNRESOLVED;
+        }
+        if (left == ResolvedScope.NONE) {
+            return right;
+        }
+        if (right == ResolvedScope.NONE) {
+            return left;
+        }
+        if (left == right) {
+            return left;
+        }
+        return ResolvedScope.MIXED;
+    }
+
+    private List<IRExpression.Correlation> deduplicateCorrelations(List<IRExpression.Correlation> correlations) {
+        return new ArrayList<>(new LinkedHashSet<>(correlations));
     }
 
     private void flattenAnd(Expression expr, List<Condition> operands) {
@@ -546,7 +900,7 @@ public class IRBuilder {
         };
     }
 
-    private IRPipeline addGroupBy(PlainSelect select, IRPipeline pipeline) {
+    private IRPipeline addGroupBy(PlainSelect select, IRPipeline pipeline, List<String> extraGroupingAttributes) {
         var availableAttrs = AttributeResolver.collectFrom(pipeline.build());
         var selectAliasSourceAttributes = new LinkedHashMap<String, String>();
         var selectAliasUnsupportedExpressionTypes = new LinkedHashMap<String, String>();
@@ -574,7 +928,13 @@ public class IRBuilder {
             }
             groupingAttributes = groupByExprs;
         } else {
-            groupingAttributes = List.of();
+            groupingAttributes = new ArrayList<>();
+        }
+
+        for (var attr : extraGroupingAttributes) {
+            if (!groupingAttributes.contains(attr)) {
+                groupingAttributes.add(attr);
+            }
         }
 
         var selectItems = select.getSelectItems();

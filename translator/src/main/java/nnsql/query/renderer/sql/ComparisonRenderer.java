@@ -75,7 +75,20 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
 
             case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
                  IRExpression.FunctionCall _ ->
-                renderWithComputedExpr(comp.left(), comp.right(), comp.operator(), rel, negate);
+                switch (comp.right()) {
+                    case IRExpression.ScalarSubquery subquery when !subquery.correlations().isEmpty() ->
+                        existsExprToCorrelatedSubquery(
+                            rel,
+                            comp.left(),
+                            comp.operator(),
+                            subquery,
+                            negate,
+                            ctx
+                        );
+                    case IRExpression.ScalarSubquery _ ->
+                        throw unsupported("Scalar subquery with computed expression on left side");
+                    default -> renderWithComputedExpr(comp.left(), comp.right(), comp.operator(), rel, negate);
+                };
 
             case IRExpression.ScalarSubquery _ ->
                 throw unsupported("Scalar subquery on left side of comparison");
@@ -102,13 +115,22 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
                 existsColumnToLiteral(rel, col, op, lit, negate);
 
             case IRExpression.ScalarSubquery subq ->
-                existsColumnToSubquery(
-                    rel,
-                    col,
-                    op,
-                    renderValueSubquery(subq, "Scalar subquery", ctx),
-                    negate
-                );
+                subq.correlations().isEmpty()
+                    ? existsColumnToSubquery(
+                        rel,
+                        col,
+                        op,
+                        renderValueSubquery(subq, "Scalar subquery", ctx),
+                        negate
+                    )
+                    : existsExprToCorrelatedSubquery(
+                        rel,
+                        new IRExpression.ColumnRef(col),
+                        op,
+                        subq,
+                        negate,
+                        ctx
+                    );
 
             case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
                  IRExpression.FunctionCall _ ->
@@ -129,10 +151,13 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
                 new BooleanValue(evaluateConstant(lit, rightLit, op) != negate);
 
             case IRExpression.ScalarSubquery subq -> {
-                var subSelect = renderValueSubquery(subq, "Scalar subquery", ctx);
-                var sub = new ParenthesedSelect();
-                sub.setSelect(subSelect);
-                yield comparison(literal(lit), op, sub);
+                if (subq.correlations().isEmpty()) {
+                    var subSelect = renderValueSubquery(subq, "Scalar subquery", ctx);
+                    var sub = new ParenthesedSelect();
+                    sub.setSelect(subSelect);
+                    yield comparison(literal(lit), op, sub);
+                }
+                yield existsExprToCorrelatedSubquery(rel, lit, op, subq, negate, ctx);
             }
 
             case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
@@ -173,6 +198,117 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         var hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(leftExpr);
         var predicate = inPredicate(ExpressionSqlRenderer.toSqlExpr(leftExpr, rel), subquery, negate);
         return renderExistsForPredicate(rel, predicate, columns, hasCaseWhen);
+    }
+
+    private Expression existsExprToCorrelatedSubquery(
+        String rel,
+        IRExpression leftExpr,
+        String op,
+        IRExpression.ScalarSubquery subquery,
+        boolean negate,
+        RenderContext ctx
+    ) {
+        var correlatedRows = renderCorrelatedSubqueryRows(subquery, ctx);
+
+        var ps = new PlainSelect();
+        ps.addSelectItem(new AllColumns());
+
+        var outerIdTbl = table(idTable(rel));
+
+        List<String> joinedColumns = new ArrayList<>();
+        joinedColumns.addAll(ExpressionSqlRenderer.collectColumns(leftExpr));
+        joinedColumns.addAll(subquery.correlations().stream()
+            .map(IRExpression.Correlation::outerAttribute)
+            .toList());
+        joinedColumns = joinedColumns.stream().distinct().toList();
+        if (joinedColumns.isEmpty()) {
+            throw new IllegalStateException("Correlated scalar subquery requires at least one outer attribute");
+        }
+
+        var firstColumn = joinedColumns.getFirst();
+        var firstTable = table(attrTable(rel, firstColumn));
+        ps.setFromItem(firstTable);
+
+        var joins = new ArrayList<Join>();
+        var conditions = new ArrayList<Expression>();
+        conditions.add(new EqualsTo(
+            column(firstTable, "id"),
+            column(outerIdTbl, "id")
+        ));
+
+        addComputedExprAttributeJoins(
+            rel,
+            joinedColumns.subList(1, joinedColumns.size()),
+            column(outerIdTbl, "id"),
+            false,
+            Sql.NonCaseJoinMode.SIMPLE_JOIN_WITH_WHERE_ID,
+            joins,
+            conditions
+        );
+
+        var subqueryFromItem = new ParenthesedSelect();
+        subqueryFromItem.setSelect(correlatedRows);
+        subqueryFromItem.setAlias(new Alias("corr_subquery", false));
+        joins.add(simpleJoin(subqueryFromItem));
+
+        var valueComparison = comparison(
+            ExpressionSqlRenderer.toSqlExpr(leftExpr, rel),
+            op,
+            column("corr_subquery", "subquery_value")
+        );
+        if (negate) {
+            valueComparison = not(paren(valueComparison));
+        }
+        conditions.add(valueComparison);
+
+        for (var correlation : subquery.correlations()) {
+            conditions.add(new EqualsTo(
+                column(attrTable(rel, correlation.outerAttribute()), "v"),
+                column("corr_subquery", correlation.innerAttribute())
+            ));
+        }
+
+        ps.setJoins(joins);
+        ps.setWhere(andAll(conditions));
+        return exists(ps);
+    }
+
+    private PlainSelect renderCorrelatedSubqueryRows(
+        IRExpression.ScalarSubquery subquery,
+        RenderContext ctx
+    ) {
+        if (subquery.subqueryPipeline().isEmpty()) {
+            throw new IllegalStateException("Correlated scalar subquery has empty pipeline");
+        }
+        if (subquery.correlations().isEmpty()) {
+            throw new IllegalStateException("Correlated scalar subquery is missing correlation metadata");
+        }
+
+        var valueAttribute = subquery.valueAttribute().orElseThrow(() -> new IllegalStateException(
+            "Correlated scalar subquery is missing value attribute"
+        ));
+
+        var subqueryIR = subquery.subqueryPipeline().getFirst();
+        var finalBaseName = subqueryRenderer.apply(subqueryIR, ctx);
+
+        var valueTable = table(attrTable(finalBaseName, valueAttribute));
+        var ps = new PlainSelect();
+        ps.setFromItem(valueTable);
+        ps.addSelectItem(column(valueTable, "v"), new Alias("subquery_value", true));
+
+        for (var correlation : subquery.correlations()) {
+            var innerTable = table(attrTable(finalBaseName, correlation.innerAttribute()));
+            ps.addSelectItem(column(innerTable, "v"), new Alias(correlation.innerAttribute(), true));
+            ps.addJoins(join(
+                innerTable,
+                new EqualsTo(
+                    column(innerTable, "id"),
+                    column(valueTable, "id")
+                )
+            ));
+        }
+
+        return ps;
     }
 
     private Expression renderExistsForPredicate(
@@ -337,6 +473,9 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         String subqueryType,
         RenderContext ctx
     ) {
+        if (!subquery.correlations().isEmpty()) {
+            throw new IllegalStateException(subqueryType + " must be uncorrelated");
+        }
         if (subquery.subqueryPipeline().isEmpty()) {
             throw new IllegalStateException(subqueryType + " has empty pipeline");
         }

@@ -435,6 +435,18 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testCorrelatedScalarSubqueryWithAggregate() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R, S WHERE R.B = S.B AND S.C = (SELECT MIN(T.D) FROM T WHERE T.E = R.A)"
+        ));
+
+        assertTrue(sql.contains("corr_subquery.subquery_value"));
+        assertTrue(sql.contains("corr_subquery.T_E"));
+        assertTrue(sql.contains("group_"));
+        assertTrue(sql.contains("product_0_R_A.v = corr_subquery.T_E"));
+    }
+
+    @Test
     void testTPCHSchema() {
         assertQueryTranslation(
             // language=sql

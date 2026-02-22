@@ -71,7 +71,21 @@ public sealed interface IRExpression {
         }
     }
 
-    record ScalarSubquery(List<IRNode> subqueryPipeline) implements IRExpression {
+    record Correlation(String outerAttribute, String innerAttribute) {}
+
+    record ScalarSubquery(
+        List<IRNode> subqueryPipeline,
+        List<Correlation> correlations,
+        Option<String> valueAttribute
+    ) implements IRExpression {
+        public ScalarSubquery(List<IRNode> subqueryPipeline) {
+            this(subqueryPipeline, List.of(), Option.none());
+        }
+
+        public ScalarSubquery(List<IRNode> subqueryPipeline, List<Correlation> correlations) {
+            this(subqueryPipeline, correlations, Option.none());
+        }
+
         @Override
         public String toString() {
             return "(SUBQUERY)";
