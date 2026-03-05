@@ -17,6 +17,13 @@ import static nnsql.query.renderer.sql.Sql.*;
 
 record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRenderer) {
 
+    record InlinedCorrelatedComparison(
+        FromItem fromItem,
+        List<Expression> predicates,
+        List<String> requiredColumns
+    ) {
+    }
+
     Expression renderTrue(Condition.Comparison comp, String rel, RenderContext ctx) {
         return render(comp, rel, false, ctx);
     }
@@ -55,6 +62,54 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.Aggregate _ ->
                 throw unsupported(inSubquery.left().getClass().getSimpleName());
         };
+    }
+
+    java.util.Optional<InlinedCorrelatedComparison> inlineCorrelatedComparison(
+        Condition.Comparison comparison,
+        String rel,
+        RenderContext ctx
+    ) {
+        if (comparison.left() instanceof IRExpression.ScalarSubquery) {
+            return java.util.Optional.empty();
+        }
+        if (!(comparison.right() instanceof IRExpression.ScalarSubquery subquery)
+            || subquery.correlations().isEmpty()) {
+            return java.util.Optional.empty();
+        }
+        if (ExpressionSqlRenderer.containsCaseWhen(comparison.left())) {
+            return java.util.Optional.empty();
+        }
+
+        var alias = ctx.nextName("corr_subquery_");
+        var correlatedRows = renderCorrelatedSubqueryRows(subquery, ctx);
+        var subqueryFromItem = new ParenthesedSelect();
+        subqueryFromItem.setSelect(correlatedRows);
+        subqueryFromItem.setAlias(new Alias(alias, false));
+
+        var predicates = new ArrayList<Expression>();
+        predicates.add(Sql.comparison(
+            ExpressionSqlRenderer.toSqlExpr(comparison.left(), rel),
+            comparison.operator(),
+            column(alias, "subquery_value")
+        ));
+        for (var correlation : subquery.correlations()) {
+            predicates.add(new EqualsTo(
+                column(attrTable(rel, correlation.outerAttribute()), "v"),
+                column(alias, correlation.innerAttribute())
+            ));
+        }
+
+        var requiredColumns = new ArrayList<String>();
+        requiredColumns.addAll(ExpressionSqlRenderer.collectColumns(comparison.left()));
+        requiredColumns.addAll(subquery.correlations().stream()
+            .map(IRExpression.Correlation::outerAttribute)
+            .toList());
+
+        return java.util.Optional.of(new InlinedCorrelatedComparison(
+            subqueryFromItem,
+            predicates,
+            requiredColumns.stream().distinct().toList()
+        ));
     }
 
     PlainSelect renderExistsSubquery(IRNode subquery, RenderContext ctx) {
