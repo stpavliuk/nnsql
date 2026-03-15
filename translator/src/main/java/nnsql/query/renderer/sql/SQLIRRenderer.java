@@ -19,7 +19,7 @@ import static nnsql.query.renderer.sql.Sql.attrCTE;
 import static nnsql.query.renderer.sql.Sql.attrTable;
 import static nnsql.query.renderer.sql.Sql.column;
 import static nnsql.query.renderer.sql.Sql.idTable;
-import static nnsql.query.renderer.sql.Sql.join;
+import static nnsql.query.renderer.sql.Sql.leftJoin;
 import static nnsql.query.renderer.sql.Sql.table;
 import static nnsql.query.renderer.sql.Sql.withSelect;
 
@@ -169,7 +169,7 @@ public class SQLIRRenderer implements IRRenderer {
         ps.setFromItem(baseIdTbl);
         for (var attr : attrs) {
             var attrTbl = table(attrCTE(baseName, attr.alias()));
-            ps.addJoins(join(attrTbl,
+            ps.addJoins(leftJoin(attrTbl,
                 new EqualsTo(column(baseIdTbl, "id"), column(attrTbl, "id"))));
         }
 

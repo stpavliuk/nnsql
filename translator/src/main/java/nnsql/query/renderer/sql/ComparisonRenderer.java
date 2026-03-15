@@ -24,6 +24,10 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
     ) {
     }
 
+    String renderSubqueryBaseName(IRNode subquery, RenderContext ctx) {
+        return subqueryRenderer.apply(subquery, ctx);
+    }
+
     Expression renderTrue(Condition.Comparison comp, String rel, RenderContext ctx) {
         return render(comp, rel, false, ctx);
     }
@@ -93,8 +97,9 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             column(alias, "subquery_value")
         ));
         for (var correlation : subquery.correlations()) {
-            predicates.add(new EqualsTo(
+            predicates.add(comparison(
                 column(attrTable(rel, correlation.outerAttribute()), "v"),
+                correlation.operator(),
                 column(alias, correlation.innerAttribute())
             ));
         }
@@ -317,8 +322,9 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         conditions.add(valueComparison);
 
         for (var correlation : subquery.correlations()) {
-            conditions.add(new EqualsTo(
+            conditions.add(comparison(
                 column(attrTable(rel, correlation.outerAttribute()), "v"),
+                correlation.operator(),
                 column("corr_subquery", correlation.innerAttribute())
             ));
         }

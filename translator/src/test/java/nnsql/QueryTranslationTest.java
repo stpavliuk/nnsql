@@ -34,6 +34,26 @@ class QueryTranslationTest {
                 "c_comment"
             )
         );
+        schemaRegistry.registerTable(
+            "lineitem",
+            List.of(
+                "l_partkey",
+                "l_quantity",
+                "l_extendedprice",
+                "l_discount",
+                "l_shipinstruct",
+                "l_shipmode"
+            )
+        );
+        schemaRegistry.registerTable(
+            "part",
+            List.of(
+                "p_partkey",
+                "p_brand",
+                "p_container",
+                "p_size"
+            )
+        );
 
         translator = new QueryTranslator(schemaRegistry, new SQLIRRenderer());
     }
@@ -80,7 +100,7 @@ class QueryTranslationTest {
                 )
                 SELECT return_2_attr_R_A.v AS R_A
                 FROM return_2_id
-                JOIN return_2_attr_R_A ON return_2_id.id = return_2_attr_R_A.id;\
+                LEFT JOIN return_2_attr_R_A ON return_2_id.id = return_2_attr_R_A.id;\
                 """
         );
 
@@ -139,7 +159,7 @@ class QueryTranslationTest {
                 )
                 SELECT duplelim_3_attr_R_A.v AS R_A
                 FROM duplelim_3_id
-                JOIN duplelim_3_attr_R_A ON duplelim_3_id.id = duplelim_3_attr_R_A.id;\
+                LEFT JOIN duplelim_3_attr_R_A ON duplelim_3_id.id = duplelim_3_attr_R_A.id;\
                 """
         );
 
@@ -193,7 +213,7 @@ class QueryTranslationTest {
                 group_2_id AS (
                     SELECT filter_1_id.id
                     FROM filter_1_id
-                    WHERE NOT EXISTS (SELECT * FROM filter_1_id R1 WHERE R1.id < filter_1_id.id AND EXISTS (SELECT * FROM filter_1_R_A a1, filter_1_R_A a2 WHERE a1.id = filter_1_id.id AND a2.id = R1.id AND a1.v = a2.v))
+                    WHERE NOT EXISTS (SELECT * FROM filter_1_id R1 WHERE R1.id < filter_1_id.id AND (EXISTS (SELECT * FROM filter_1_R_A a1, filter_1_R_A a2 WHERE a1.id = filter_1_id.id AND a2.id = R1.id AND a1.v = a2.v) OR NOT EXISTS (SELECT * FROM filter_1_R_A WHERE filter_1_R_A.id = filter_1_id.id OR filter_1_R_A.id = R1.id)))
                 ),
                 group_2_R_A AS (
                     SELECT filter_1_R_A.*
@@ -202,7 +222,7 @@ class QueryTranslationTest {
                 group_2_total AS (
                     SELECT group_2_id.id, SUM(filter_1_S_C.v) AS v
                     FROM group_2_id, filter_1_id input_id, filter_1_S_C
-                    WHERE filter_1_S_C.id = input_id.id AND EXISTS (SELECT * FROM filter_1_R_A g1, filter_1_R_A g2 WHERE g1.id = input_id.id AND g2.id = group_2_id.id AND g1.v = g2.v)
+                    WHERE filter_1_S_C.id = input_id.id AND (EXISTS (SELECT * FROM filter_1_R_A g1, filter_1_R_A g2 WHERE g1.id = input_id.id AND g2.id = group_2_id.id AND g1.v = g2.v) OR NOT EXISTS (SELECT * FROM filter_1_R_A WHERE filter_1_R_A.id = input_id.id OR filter_1_R_A.id = group_2_id.id))
                     GROUP BY group_2_id.id
                 ),
                 return_3_id AS (
@@ -216,8 +236,8 @@ class QueryTranslationTest {
                 )
                 SELECT return_3_attr_R_A.v AS R_A, return_3_attr_total.v AS total
                     FROM return_3_id
-                    JOIN return_3_attr_R_A ON return_3_id.id = return_3_attr_R_A.id
-                    JOIN return_3_attr_total ON return_3_id.id = return_3_attr_total.id;\
+                    LEFT JOIN return_3_attr_R_A ON return_3_id.id = return_3_attr_R_A.id
+                    LEFT JOIN return_3_attr_total ON return_3_id.id = return_3_attr_total.id;\
                 """
         );
 
@@ -261,7 +281,7 @@ class QueryTranslationTest {
                     )
                     SELECT return_2_attr_T_D.v AS T_D
                     FROM return_2_id
-                    JOIN return_2_attr_T_D ON return_2_id.id = return_2_attr_T_D.id;\
+                    LEFT JOIN return_2_attr_T_D ON return_2_id.id = return_2_attr_T_D.id;\
                 """);
 
         assertQueryTranslation(
@@ -304,7 +324,7 @@ class QueryTranslationTest {
                 )
                 SELECT return_2_attr_R_A.v AS R_A
                 FROM return_2_id
-                JOIN return_2_attr_R_A ON return_2_id.id = return_2_attr_R_A.id;\
+                LEFT JOIN return_2_attr_R_A ON return_2_id.id = return_2_attr_R_A.id;\
                 """
         );
     }
@@ -405,6 +425,33 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testNestedAndFallbackDoesNotEmitBareInlinePredicates() {
+        var sql = normalizeWhitespace(translator.translate(
+            """
+                SELECT sum(l_extendedprice * (1 - l_discount)) AS revenue
+                FROM lineitem, part
+                WHERE p_partkey = l_partkey
+                  AND p_brand = 'Brand#12'
+                  AND p_container in ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG')
+                  AND l_quantity >= 1
+                  AND l_quantity <= 11
+                  AND p_size BETWEEN 1 AND 5
+                  AND l_shipmode in ('AIR', 'AIR REG')
+                  AND l_shipinstruct = 'DELIVER IN PERSON'
+                """
+        ));
+
+        assertTrue(sql.contains(
+            "EXISTS (SELECT * FROM product_0_lineitem_l_quantity WHERE product_0_lineitem_l_quantity.id = product_0_id.id AND product_0_lineitem_l_quantity.v >= 1.0)"
+        ));
+        assertTrue(sql.contains(
+            "EXISTS (SELECT * FROM product_0_lineitem_l_quantity WHERE product_0_lineitem_l_quantity.id = product_0_id.id AND product_0_lineitem_l_quantity.v <= 11.0)"
+        ));
+        assertFalse(sql.contains("(product_0_lineitem_l_quantity.v >= 1.0)"));
+        assertFalse(sql.contains("(product_0_lineitem_l_quantity.v <= 11.0)"));
+    }
+
+    @Test
     void testExistsPredicatesWithUncorrelatedSubqueries() {
         var existsSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE EXISTS (SELECT * FROM S WHERE S.B > 10)"
@@ -444,6 +491,51 @@ class QueryTranslationTest {
         assertTrue(sql.contains("corr_subquery.T_E"));
         assertTrue(sql.contains("group_"));
         assertTrue(sql.contains("product_0_R_A.v = corr_subquery.T_E"));
+    }
+
+    @Test
+    void testCorrelatedExists() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE EXISTS (SELECT * FROM S WHERE S.B = R.B AND S.C > 10)"
+        ));
+
+        assertTrue(sql.contains("filter_"), "should have inner filter for local predicate S.C > 10");
+        assertTrue(sql.contains("R_B.v = "), "should join on correlation attribute R_B");
+        assertTrue(sql.contains("S_B.v"), "should reference inner correlation attribute S_B");
+        assertTrue(sql.contains("S_C.v > 10.0"), "should have local predicate in inner subquery");
+    }
+
+    @Test
+    void testCorrelatedNotExists() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE NOT EXISTS (SELECT * FROM S WHERE S.B = R.B)"
+        ));
+
+        assertTrue(sql.contains("NOT EXISTS"), "should have NOT EXISTS");
+        assertTrue(sql.contains("R_B.v = "), "should join on correlation attribute R_B");
+        assertTrue(sql.contains("S_B.v"), "should reference inner correlation attribute S_B");
+    }
+
+    @Test
+    void testCorrelatedExistsWithInequality() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE EXISTS (SELECT * FROM S WHERE S.B = R.B AND S.C <> R.A)"
+        ));
+
+        assertTrue(sql.contains("R_B.v = "), "should join on equality correlation");
+        assertTrue(sql.contains("!="), "should have inequality correlation");
+    }
+
+    @Test
+    void rejectsExplicitJoinSyntax() {
+        var error = assertThrows(UnsupportedOperationException.class, () -> translator.translate(
+            "SELECT customer.c_custkey FROM customer LEFT JOIN S ON customer.c_custkey = S.B"
+        ));
+
+        assertEquals(
+            "Explicit JOIN syntax is not supported yet",
+            error.getMessage()
+        );
     }
 
     @Test
@@ -576,7 +668,7 @@ class QueryTranslationTest {
                 group_6_id AS (
                 SELECT filter_1_id.id
                 FROM filter_1_id
-                    WHERE NOT EXISTS (SELECT * FROM filter_1_id R1 WHERE R1.id < filter_1_id.id AND EXISTS (SELECT * FROM filter_1_customer_c_mktsegment a1, filter_1_customer_c_mktsegment a2 WHERE a1.id = filter_1_id.id AND a2.id = R1.id AND a1.v = a2.v))
+                    WHERE NOT EXISTS (SELECT * FROM filter_1_id R1 WHERE R1.id < filter_1_id.id AND (EXISTS (SELECT * FROM filter_1_customer_c_mktsegment a1, filter_1_customer_c_mktsegment a2 WHERE a1.id = filter_1_id.id AND a2.id = R1.id AND a1.v = a2.v) OR NOT EXISTS (SELECT * FROM filter_1_customer_c_mktsegment WHERE filter_1_customer_c_mktsegment.id = filter_1_id.id OR filter_1_customer_c_mktsegment.id = R1.id)))
                 ),
                 group_6_customer_c_mktsegment AS (
                     SELECT filter_1_customer_c_mktsegment.*
@@ -585,12 +677,12 @@ class QueryTranslationTest {
                 group_6_seg AS (
                     SELECT group_6_id.id, COUNT(filter_1_customer_c_custkey.v) AS v
                     FROM group_6_id, filter_1_id input_id, filter_1_customer_c_custkey
-                    WHERE filter_1_customer_c_custkey.id = input_id.id AND EXISTS (SELECT * FROM filter_1_customer_c_mktsegment g1, filter_1_customer_c_mktsegment g2 WHERE g1.id = input_id.id AND g2.id = group_6_id.id AND g1.v = g2.v)
+                    WHERE filter_1_customer_c_custkey.id = input_id.id AND (EXISTS (SELECT * FROM filter_1_customer_c_mktsegment g1, filter_1_customer_c_mktsegment g2 WHERE g1.id = input_id.id AND g2.id = group_6_id.id AND g1.v = g2.v) OR NOT EXISTS (SELECT * FROM filter_1_customer_c_mktsegment WHERE filter_1_customer_c_mktsegment.id = input_id.id OR filter_1_customer_c_mktsegment.id = group_6_id.id))
                     GROUP BY group_6_id.id
                     UNION
                     SELECT group_6_id.id, 0 AS v
                     FROM group_6_id
-                    WHERE NOT EXISTS (SELECT * FROM filter_1_id input_id, filter_1_customer_c_custkey WHERE filter_1_customer_c_custkey.id = input_id.id AND EXISTS (SELECT * FROM filter_1_customer_c_mktsegment g1, filter_1_customer_c_mktsegment g2 WHERE g1.id = input_id.id AND g2.id = group_6_id.id AND g1.v = g2.v))
+                    WHERE NOT EXISTS (SELECT * FROM filter_1_id input_id, filter_1_customer_c_custkey WHERE filter_1_customer_c_custkey.id = input_id.id AND (EXISTS (SELECT * FROM filter_1_customer_c_mktsegment g1, filter_1_customer_c_mktsegment g2 WHERE g1.id = input_id.id AND g2.id = group_6_id.id AND g1.v = g2.v) OR NOT EXISTS (SELECT * FROM filter_1_customer_c_mktsegment WHERE filter_1_customer_c_mktsegment.id = input_id.id OR filter_1_customer_c_mktsegment.id = group_6_id.id)))
                 ),
                 aggfilter_7_id AS (
                     SELECT group_6_id.id
@@ -613,11 +705,11 @@ class QueryTranslationTest {
                 ),
                 return_8_attr_seg AS (
                     SELECT id, v FROM aggfilter_7_seg
-                )
+                    )
                 SELECT return_8_attr_mkt.v AS mkt, return_8_attr_seg.v AS seg
                     FROM return_8_id
-                    JOIN return_8_attr_mkt ON return_8_id.id = return_8_attr_mkt.id
-                    JOIN return_8_attr_seg ON return_8_id.id = return_8_attr_seg.id;
+                    LEFT JOIN return_8_attr_mkt ON return_8_id.id = return_8_attr_mkt.id
+                    LEFT JOIN return_8_attr_seg ON return_8_id.id = return_8_attr_seg.id;
                 """
         );
     }
@@ -694,7 +786,7 @@ class QueryTranslationTest {
                 )
                 SELECT return_5_attr_A.v AS A
                 FROM return_5_id
-                JOIN return_5_attr_A ON return_5_id.id = return_5_attr_A.id;\
+                LEFT JOIN return_5_attr_A ON return_5_id.id = return_5_attr_A.id;\
                 """
         );
     }
@@ -760,6 +852,12 @@ class QueryTranslationTest {
 
         assertTrue(sql.contains("strftime('%y', product_0_customer_c_comment.v) as v"));
         assertTrue(sql.contains("return_1_attr_comment_year"));
+
+        var substrSql = normalizeWhitespace(translator.translate(
+            "SELECT SUBSTR(customer.c_phone, 1, 2) AS cntrycode FROM customer"
+        ));
+        assertTrue(substrSql.contains("SUBSTR(product_0_customer_c_phone.v, 1, 2) AS v"));
+        assertFalse(substrSql.contains("SUBSTR(product_0_customer_c_phone.v, 1.0, 2.0)"));
     }
 
     @Test
@@ -824,22 +922,22 @@ class QueryTranslationTest {
         var addSql = normalizeWhitespace(translator.translate(
             "SELECT R.A + R.B AS total FROM R"
         ));
-        assertFalse(addSql.contains("LEFT JOIN"),
-            "Non-CASE BinaryOp should use INNER JOIN, not LEFT JOIN");
+        assertFalse(addSql.contains("LEFT JOIN product_0_"),
+            "Non-CASE BinaryOp should not use LEFT JOIN for source attribute access");
 
         var castSql = normalizeWhitespace(translator.translate(
             "SELECT CAST(R.A AS INTEGER) AS a_int FROM R"
         ));
-        assertFalse(castSql.contains("LEFT JOIN"),
-            "Non-CASE Cast should use INNER JOIN, not LEFT JOIN");
+        assertFalse(castSql.contains("LEFT JOIN product_0_"),
+            "Non-CASE Cast should not use LEFT JOIN for source attribute access");
 
         var computedWhereSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.A + R.B > 5"
         ));
         assertTrue(computedWhereSql.contains("WHERE EXISTS (SELECT * FROM"));
         assertTrue(computedWhereSql.contains("product_0_R_A.v + product_0_R_B.v > 5.0"));
-        assertFalse(computedWhereSql.contains("LEFT JOIN"),
-            "Non-CASE computed predicate should use INNER/simple joins, not LEFT JOIN");
+        assertFalse(computedWhereSql.contains("LEFT JOIN product_0_"),
+            "Non-CASE computed predicate should not use LEFT JOIN for source attribute access");
     }
 
     @Test
@@ -960,6 +1058,20 @@ class QueryTranslationTest {
         ));
         assertTrue(groupedSql.contains("COUNT(DISTINCT product_0_R_B.v)"));
         assertTrue(groupedSql.contains("group_1_cnt"));
+    }
+
+    @Test
+    void testGroupByUsesBothNullEquality() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A, COUNT(*) AS cnt FROM R GROUP BY R.A"
+        ));
+
+        assertTrue(sql.contains(
+            "(EXISTS (SELECT * FROM product_0_R_A a1, product_0_R_A a2 WHERE a1.id = product_0_id.id AND a2.id = R1.id AND a1.v = a2.v) OR NOT EXISTS (SELECT * FROM product_0_R_A WHERE product_0_R_A.id = product_0_id.id OR product_0_R_A.id = R1.id))"
+        ));
+        assertTrue(sql.contains(
+            "(EXISTS (SELECT * FROM product_0_R_A g1, product_0_R_A g2 WHERE g1.id = input_id.id AND g2.id = group_1_id.id AND g1.v = g2.v) OR NOT EXISTS (SELECT * FROM product_0_R_A WHERE product_0_R_A.id = input_id.id OR product_0_R_A.id = group_1_id.id))"
+        ));
     }
 
     @Test
@@ -1104,7 +1216,7 @@ class QueryTranslationTest {
                 return_7_attr_A AS (
                     SELECT id, v FROM product_0_c2_A
                 )
-                SELECT return_7_attr_A.v AS A FROM return_7_id JOIN return_7_attr_A ON return_7_id.id = return_7_attr_A.id;\
+                SELECT return_7_attr_A.v AS A FROM return_7_id LEFT JOIN return_7_attr_A ON return_7_id.id = return_7_attr_A.id;\
                 """
         );
     }

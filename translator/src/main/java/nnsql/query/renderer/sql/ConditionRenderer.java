@@ -119,7 +119,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
                 renderLike(like, negate, relationName, ctx);
 
             case Condition.Exists exists ->
-                renderExists(exists, negate, ctx);
+                renderExists(exists, negate, relationName, ctx);
 
             case Condition.InSubquery inSubquery ->
                 comparisonRenderer.renderInSubquery(inSubquery, relationName, negate, ctx);
@@ -144,10 +144,67 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
         return comparisonRenderer.renderTrue(comparison, relationName, ctx);
     }
 
-    private Expression renderExists(Condition.Exists existsCondition, boolean negate, RenderContext ctx) {
+    private Expression renderExists(Condition.Exists existsCondition, boolean negate,
+                                     String relationName, RenderContext ctx) {
         var effectiveNegate = negate != existsCondition.isNegated();
-        var subquery = comparisonRenderer.renderExistsSubquery(existsCondition.subquery(), ctx);
+
+        if (existsCondition.correlations().isEmpty()) {
+            var subquery = comparisonRenderer.renderExistsSubquery(existsCondition.subquery(), ctx);
+            return effectiveNegate ? notExists(subquery) : exists(subquery);
+        }
+
+        var subquery = renderCorrelatedExists(
+            existsCondition.subquery(), existsCondition.correlations(), relationName, ctx);
         return effectiveNegate ? notExists(subquery) : exists(subquery);
+    }
+
+    private PlainSelect renderCorrelatedExists(
+        IRNode subqueryIR,
+        List<IRExpression.Correlation> correlations,
+        String outerRelationName,
+        RenderContext ctx
+    ) {
+        var coreIR = stripProjection(subqueryIR);
+        var innerBaseName = comparisonRenderer.renderSubqueryBaseName(coreIR, ctx);
+
+        var innerIdTbl = table(idTable(innerBaseName));
+        var outerIdTbl = table(idTable(outerRelationName));
+        var ps = new PlainSelect();
+        ps.addSelectItem(new AllColumns());
+        ps.setFromItem(innerIdTbl);
+
+        var joins = new ArrayList<net.sf.jsqlparser.statement.select.Join>();
+        var conditions = new ArrayList<Expression>();
+
+        for (var correlation : correlations) {
+            var innerAttrTbl = table(attrTable(innerBaseName, correlation.innerAttribute()));
+            var outerAttrTbl = table(attrTable(outerRelationName, correlation.outerAttribute()));
+
+            joins.add(simpleJoin(innerAttrTbl));
+            joins.add(simpleJoin(outerAttrTbl));
+
+            conditions.add(new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                column(innerAttrTbl, "id"), column(innerIdTbl, "id")));
+            conditions.add(new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                column(outerAttrTbl, "id"), column(outerIdTbl, "id")));
+            conditions.add(comparison(
+                column(outerAttrTbl, "v"), correlation.operator(), column(innerAttrTbl, "v")));
+        }
+
+        if (!joins.isEmpty()) {
+            ps.setJoins(joins);
+        }
+        ps.setWhere(andAll(conditions));
+        return ps;
+    }
+
+    private static IRNode stripProjection(IRNode node) {
+        return switch (node) {
+            case nnsql.query.ir.Return r -> r.input();
+            case nnsql.query.ir.DuplElim d -> stripProjection(d.input());
+            case nnsql.query.ir.Sort s -> stripProjection(s.input());
+            default -> node;
+        };
     }
 
     private Expression renderIsNull(String attr, boolean isNull, String relationName) {
@@ -190,7 +247,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             conjunctionParts.add(paren(renderInlinePredicateExists(inlinePredicates, relationName)));
         } else {
             fallbackExpressions.addAll(inlinePredicates.stream()
-                .map(inline -> paren(inline.predicate()))
+                .map(inline -> paren(render(inline.sourceCondition(), relationName, false, ctx)))
                 .toList());
         }
         conjunctionParts.addAll(fallbackExpressions);
@@ -243,12 +300,14 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
     private java.util.Optional<InlinePredicate> inlineCondition(Condition condition, String relationName) {
         return switch (condition) {
             case Condition.Comparison comparison -> inlineComparison(
+                comparison,
                 comparison.left(),
                 comparison.operator(),
                 comparison.right(),
                 relationName
             );
             case Condition.Like like when !like.isNegated() -> inlineComparison(
+                like,
                 like.left(),
                 "LIKE",
                 like.pattern(),
@@ -259,6 +318,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
     }
 
     private java.util.Optional<InlinePredicate> inlineComparison(
+        Condition sourceCondition,
         IRExpression left,
         String operator,
         IRExpression right,
@@ -274,7 +334,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             ExpressionSqlRenderer.toSqlExpr(right, relationName)
         );
         var requiredColumns = ExpressionSqlRenderer.collectColumns(left, right);
-        return java.util.Optional.of(new InlinePredicate(predicate, requiredColumns));
+        return java.util.Optional.of(new InlinePredicate(sourceCondition, predicate, requiredColumns));
     }
 
     private boolean isInlineExpression(IRExpression expression) {
@@ -284,7 +344,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
         };
     }
 
-    private record InlinePredicate(Expression predicate, List<String> requiredColumns) {
+    private record InlinePredicate(Condition sourceCondition, Expression predicate, List<String> requiredColumns) {
     }
 
     private Expression renderLogical(List<Condition> operands, boolean negate,

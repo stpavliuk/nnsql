@@ -25,7 +25,8 @@ public class AttributeResolver {
                     qualifyExpression(pattern, availableAttrs),
                     negated
                 );
-            case Exists(var subquery, var negated) -> new Exists(subquery, negated);
+            case Exists(var subquery, var negated, var correlations) ->
+                new Exists(subquery, negated, correlations);
             case InSubquery(var left, var subquery, var negated) ->
                 new InSubquery(
                     qualifyExpression(left, availableAttrs),

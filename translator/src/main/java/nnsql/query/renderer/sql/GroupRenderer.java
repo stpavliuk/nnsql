@@ -60,20 +60,29 @@ class GroupRenderer {
     private Expression equalityExists(String inputBaseName, String attr,
                                        String alias1, String alias2,
                                        Expression outerId, Expression innerId) {
-        var t1 = tableAlias(attrTable(inputBaseName, attr), alias1);
-        var t2 = tableAlias(attrTable(inputBaseName, attr), alias2);
+        var attrTableName = attrTable(inputBaseName, attr);
+        var t1 = tableAlias(attrTableName, alias1);
+        var t2 = tableAlias(attrTableName, alias2);
 
-        var ps = new PlainSelect();
-        ps.addSelectItem(new AllColumns());
-        ps.setFromItem(t1);
-        ps.addJoins(simpleJoin(t2));
-        ps.setWhere(andAll(List.of(
+        var existsSelect = new PlainSelect();
+        existsSelect.addSelectItem(new AllColumns());
+        existsSelect.setFromItem(t1);
+        existsSelect.addJoins(simpleJoin(t2));
+        existsSelect.setWhere(andAll(List.of(
             new EqualsTo(column(alias1, "id"), outerId),
             new EqualsTo(column(alias2, "id"), innerId),
             new EqualsTo(column(alias1, "v"), column(alias2, "v"))
         )));
 
-        return exists(ps);
+        var notExistsSelect = new PlainSelect();
+        notExistsSelect.addSelectItem(new AllColumns());
+        notExistsSelect.setFromItem(table(attrTableName));
+        notExistsSelect.setWhere(or(
+            new EqualsTo(column(attrTableName, "id"), outerId),
+            new EqualsTo(column(attrTableName, "id"), innerId)
+        ));
+
+        return paren(or(exists(existsSelect), notExists(notExistsSelect)));
     }
 
     private void addAggregateCTEs(RenderContext ctx, String baseName, String inputBaseName, Group group) {

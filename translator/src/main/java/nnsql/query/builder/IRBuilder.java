@@ -87,12 +87,7 @@ public class IRBuilder {
             if (!deduplicatedCorrelations.isEmpty()) {
                 if (correlationCollectorStack.isEmpty()) {
                     throw new UnsupportedOperationException(
-                        "Correlated subqueries are currently supported only for scalar subquery comparisons"
-                    );
-                }
-                if (!hasAggregates) {
-                    throw new UnsupportedOperationException(
-                        "Correlated scalar subqueries without aggregates are not supported"
+                        "Correlated subqueries are not supported in this context"
                     );
                 }
                 correlationCollectorStack.peek().addAll(deduplicatedCorrelations);
@@ -147,11 +142,22 @@ public class IRBuilder {
 
         if (select.getJoins() != null) {
             for (var join : select.getJoins()) {
+                rejectExplicitJoin(join);
                 relations.add(toRelation(join.getFromItem()));
             }
         }
 
         return relations;
+    }
+
+    private void rejectExplicitJoin(Join join) {
+        if (join.isSimple()) {
+            return;
+        }
+
+        throw new UnsupportedOperationException(
+            "Explicit JOIN syntax is not supported yet"
+        );
     }
 
     private Relation toRelation(FromItem from) {
@@ -442,10 +448,22 @@ public class IRBuilder {
             throw new UnsupportedOperationException("EXISTS supports subqueries only");
         }
 
-        var subqueryIR = buildSelect((PlainSelect) ps.getSelect(), false);
-        return exists.isNot()
-            ? Condition.notExists(subqueryIR)
-            : Condition.exists(subqueryIR);
+        var correlations = new ArrayList<IRExpression.Correlation>();
+        correlationCollectorStack.push(correlations);
+        try {
+            var subqueryIR = buildSelect((PlainSelect) ps.getSelect(), false);
+            var deduplicatedCorrelations = deduplicateCorrelations(correlations);
+            if (deduplicatedCorrelations.isEmpty()) {
+                return exists.isNot()
+                    ? Condition.notExists(subqueryIR)
+                    : Condition.exists(subqueryIR);
+            }
+            return exists.isNot()
+                ? Condition.correlatedNotExists(subqueryIR, deduplicatedCorrelations)
+                : Condition.correlatedExists(subqueryIR, deduplicatedCorrelations);
+        } finally {
+            correlationCollectorStack.pop();
+        }
     }
 
     private Condition toInSubqueryCondition(InExpression in, ParenthesedSelect subquery) {
@@ -571,24 +589,36 @@ public class IRBuilder {
                 IRExpression.ColumnRef(var left),
                 IRExpression.ColumnRef(var right),
                 var operator
-            ) when "=".equals(operator) -> {
+            ) -> {
                 var resolvedLeft = resolveColumn(left, localAttrs, outerAttrs);
                 var resolvedRight = resolveColumn(right, localAttrs, outerAttrs);
                 if (resolvedLeft.scope() == ResolvedScope.LOCAL && resolvedRight.scope() == ResolvedScope.OUTER) {
                     yield Option.some(new IRExpression.Correlation(
                         resolvedRight.attribute(),
-                        resolvedLeft.attribute()
+                        resolvedLeft.attribute(),
+                        operator
                     ));
                 }
                 if (resolvedLeft.scope() == ResolvedScope.OUTER && resolvedRight.scope() == ResolvedScope.LOCAL) {
                     yield Option.some(new IRExpression.Correlation(
                         resolvedLeft.attribute(),
-                        resolvedRight.attribute()
+                        resolvedRight.attribute(),
+                        flipOperator(operator)
                     ));
                 }
                 yield Option.none();
             }
             default -> Option.none();
+        };
+    }
+
+    private String flipOperator(String operator) {
+        return switch (operator) {
+            case "<" -> ">";
+            case ">" -> "<";
+            case "<=" -> ">=";
+            case ">=" -> "<=";
+            default -> operator;
         };
     }
 
@@ -622,7 +652,7 @@ public class IRBuilder {
                     expressionScope(left, localAttrs, outerAttrs),
                     expressionScope(pattern, localAttrs, outerAttrs)
                 );
-            case Condition.Exists(var subquery, _) ->
+            case Condition.Exists(var subquery, _, _) ->
                 conditionScopeForSubquery(subquery, localAttrs, outerAttrs);
             case Condition.InSubquery(_, var subquery, _) ->
                 conditionScopeForSubquery(subquery, localAttrs, outerAttrs);

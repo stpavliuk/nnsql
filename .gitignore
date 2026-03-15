@@ -160,6 +160,7 @@ Temporary Items
 ### -- Misc
 .idea
 docs
-scripts
 .vscode
 
+
+tpch-tests/src/test/resources/data/
