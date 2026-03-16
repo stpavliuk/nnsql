@@ -146,6 +146,7 @@ public final class TpchHtmlReport {
             .toList();
         var passed = sortedEntries.stream().filter(QueryReportEntry::success).count();
         var failed = sortedEntries.size() - passed;
+        var timingChart = toTimingChartModel(sortedEntries);
 
         var model = new ReportModel(
             OffsetDateTime.now().toString(),
@@ -153,6 +154,7 @@ public final class TpchHtmlReport {
             sortedEntries.size(),
             passed,
             failed,
+            timingChart,
             sortedEntries.stream()
                 .map(TpchHtmlReport::toEntryModel)
                 .toList()
@@ -181,9 +183,11 @@ public final class TpchHtmlReport {
         var sections = new ArrayList<SectionModel>();
         var sourceExplainTree = toHtmlDataUri(entry.sourceExplainHtml());
         var translatedExplainTree = toHtmlDataUri(entry.translatedExplainHtml());
+        var sourceExecution = displayDuration(entry.sourceExecutionMs());
+        var translatedExecution = displayDuration(entry.translatedExecutionMs());
 
         sections.add(new SectionModel(
-            "Source Query - " + displayDuration(entry.sourceExecutionMs()),
+            "Source Query - " + sourceExecution,
             defaultText(entry.sourceQuery()),
             true,
             "",
@@ -199,7 +203,7 @@ public final class TpchHtmlReport {
             sourceExplainTree
         ));
         sections.add(new SectionModel(
-            "Translated Query - " + displayDuration(entry.translatedExecutionMs()),
+            "Translated Query - " + translatedExecution,
             defaultText(entry.translatedQuery()),
             true,
             "",
@@ -229,11 +233,45 @@ public final class TpchHtmlReport {
             entry.queryName(),
             entry.success() ? "success" : "danger",
             entry.success() ? "PASS" : "FAIL",
+            sourceExecution,
+            translatedExecution,
             String.valueOf(entry.orderSensitive()),
             displayCount(entry.sourceRowCount()),
             displayCount(entry.translatedRowCount()),
             sections
         );
+    }
+
+    private static TimingChartModel toTimingChartModel(List<QueryReportEntry> entries) {
+        var maxDurationMs = entries.stream()
+            .flatMap(entry -> List.of(entry.sourceExecutionMs(), entry.translatedExecutionMs()).stream())
+            .filter(duration -> duration != null && duration > 0.0d)
+            .mapToDouble(Double::doubleValue)
+            .max()
+            .orElse(0.0d);
+
+        return new TimingChartModel(
+            maxDurationMs > 0.0d,
+            displayDuration(maxDurationMs > 0.0d ? maxDurationMs : null),
+            entries.stream()
+                .map(entry -> new TimingRowModel(
+                    entry.queryName(),
+                    formatNumericDuration(entry.sourceExecutionMs()),
+                    displayDuration(entry.sourceExecutionMs()),
+                    entry.sourceExecutionMs() != null,
+                    formatNumericDuration(entry.translatedExecutionMs()),
+                    displayDuration(entry.translatedExecutionMs()),
+                    entry.translatedExecutionMs() != null
+                ))
+                .toList()
+        );
+    }
+
+    private static String formatNumericDuration(Double durationMs) {
+        if (durationMs == null) {
+            return "";
+        }
+        return "%.3f".formatted(durationMs);
     }
 
     private static String displayDuration(Double ms) {
@@ -300,6 +338,7 @@ public final class TpchHtmlReport {
         int total,
         long passed,
         long failed,
+        TimingChartModel timingChart,
         List<EntryModel> entries
     ) {}
 
@@ -307,10 +346,28 @@ public final class TpchHtmlReport {
         String queryName,
         String statusClass,
         String statusLabel,
+        String sourceExecution,
+        String translatedExecution,
         String orderSensitive,
         String sourceRowCount,
         String translatedRowCount,
         List<SectionModel> sections
+    ) {}
+
+    public record TimingChartModel(
+        boolean hasData,
+        String maxExecution,
+        List<TimingRowModel> rows
+    ) {}
+
+    public record TimingRowModel(
+        String queryName,
+        String sourceExecutionMs,
+        String sourceExecution,
+        boolean sourceAvailable,
+        String translatedExecutionMs,
+        String translatedExecution,
+        boolean translatedAvailable
     ) {}
 
     public record SectionModel(

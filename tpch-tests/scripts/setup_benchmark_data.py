@@ -130,8 +130,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--scale-factor",
-        default="0.5",
-        help="TPCH scale factor folder to generate. Default: 0.5",
+        default="1",
+        help="TPCH scale factor folder to generate. Default: 1",
     )
     parser.add_argument(
         "--output-root",

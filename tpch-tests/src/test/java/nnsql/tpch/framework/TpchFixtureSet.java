@@ -1,9 +1,11 @@
 package nnsql.tpch.framework;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
@@ -108,7 +110,9 @@ public record TpchFixtureSet(
     private static void updateDigest(MessageDigest digest, Path path) throws IOException {
         digest.update(path.getFileName().toString().getBytes(StandardCharsets.UTF_8));
         digest.update((byte) 0);
-        digest.update(Files.readAllBytes(path));
+        try (var in = new DigestInputStream(Files.newInputStream(path), digest)) {
+            in.transferTo(OutputStream.nullOutputStream());
+        }
         digest.update((byte) 0);
     }
 

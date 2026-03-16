@@ -10,9 +10,9 @@ class TpchFixtureSetTest {
 
     @Test
     void loadsFixtureDirectoryForScaleFactor() throws Exception {
-        var fixtureSet = TpchFixtureSet.load("0.5");
+        var fixtureSet = TpchFixtureSet.load("1");
 
-        assertEquals("0.5", fixtureSet.scaleFactor());
+        assertEquals("1", fixtureSet.scaleFactor());
         assertTrue(fixtureSet.schemaPath().endsWith("schema.sql"));
         assertEquals(8, fixtureSet.tables().size());
         assertTrue(fixtureSet.tables().contains("lineitem"));
@@ -23,7 +23,7 @@ class TpchFixtureSetTest {
 
     @Test
     void cacheKeyChangesWithNullRate() throws Exception {
-        var fixtureSet = TpchFixtureSet.load("0.5");
+        var fixtureSet = TpchFixtureSet.load("1");
 
         var zeroRate = TpchFixtureSet.cacheKey(0.0d, fixtureSet);
         var defaultRate = TpchFixtureSet.cacheKey(0.7d, fixtureSet);

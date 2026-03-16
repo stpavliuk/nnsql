@@ -39,6 +39,12 @@ tasks.named('test') {
     if (System.getProperty('nnsql.tpch.queries')) {
         systemProperty 'nnsql.tpch.queries', System.getProperty('nnsql.tpch.queries')
     }
+    if (System.getProperty('nnsql.tpch.timingRuns')) {
+        systemProperty 'nnsql.tpch.timingRuns', System.getProperty('nnsql.tpch.timingRuns')
+    }
+    if (System.getProperty('nnsql.tpch.timingWarmupRuns')) {
+        systemProperty 'nnsql.tpch.timingWarmupRuns', System.getProperty('nnsql.tpch.timingWarmupRuns')
+    }
 }
 
 tasks.named('build') {
