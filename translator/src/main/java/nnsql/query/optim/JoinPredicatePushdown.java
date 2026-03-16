@@ -442,7 +442,8 @@ public class JoinPredicatePushdown {
                 operands.stream().map(operand -> findSingleRelationIndex(operand, product)).toList()
             );
             case Condition.Not(var operand) -> findSingleRelationIndex(operand, product);
-            case Condition.Exists _, Condition.InSubquery _ -> Optional.empty();
+            case Condition.Exists _ -> Optional.empty();
+            case Condition.InSubquery(var left, _, _) -> findSingleRelationIndex(left, product);
         };
     }
 

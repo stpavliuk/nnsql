@@ -410,6 +410,17 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testTopLevelJoinInSubqueryPredicatesArePushedIntoBaseRelations() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R, S WHERE R.B = S.B AND S.C IN (SELECT T.D FROM T WHERE T.E > 0)"
+        ));
+
+        assertTrue(sql.contains("S__ID AS ( SELECT id FROM return_"));
+        assertFalse(sql.contains("product_0_S_C.v IN (SELECT v FROM return_"));
+        assertTrue(sql.contains("T_E.v > 0.0"));
+    }
+
+    @Test
     void testNestedSubqueriesDoNotWrapRepeatedBaseAliases() {
         var sql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.B = (SELECT MIN(R.B) FROM R WHERE R.A > 0)"
