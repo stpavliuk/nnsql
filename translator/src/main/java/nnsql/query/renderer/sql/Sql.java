@@ -181,13 +181,7 @@ final class Sql {
             var attrTbl = table(attrTable(baseName, col));
             var idEq = new EqualsTo(column(attrTbl, "id"), anchorIdExpr);
 
-            if (hasCaseWhen || nonCaseMode == NonCaseJoinMode.INNER_ON) {
-                joins.add(hasCaseWhen ? leftJoin(attrTbl, idEq) : join(attrTbl, idEq));
-                continue;
-            }
-
-            joins.add(simpleJoin(attrTbl));
-            whereConditions.add(idEq);
+            joins.add(hasCaseWhen ? leftJoin(attrTbl, idEq) : join(attrTbl, idEq));
         }
     }
 

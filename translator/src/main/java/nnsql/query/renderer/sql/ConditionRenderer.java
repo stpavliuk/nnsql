@@ -204,13 +204,21 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             var innerAttrTbl = table(attrTable(innerBaseName, correlation.innerAttribute()));
             var outerAttrTbl = table(attrTable(outerRelationName, correlation.outerAttribute()));
 
-            joins.add(simpleJoin(innerAttrTbl));
-            joins.add(simpleJoin(outerAttrTbl));
+            joins.add(join(
+                innerAttrTbl,
+                new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                    column(innerAttrTbl, "id"),
+                    column(innerIdTbl, "id")
+                )
+            ));
+            joins.add(join(
+                outerAttrTbl,
+                new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                    column(outerAttrTbl, "id"),
+                    column(outerIdTbl, "id")
+                )
+            ));
 
-            conditions.add(new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
-                column(innerAttrTbl, "id"), column(innerIdTbl, "id")));
-            conditions.add(new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
-                column(outerAttrTbl, "id"), column(outerIdTbl, "id")));
             conditions.add(comparison(
                 column(outerAttrTbl, "v"), correlation.operator(), column(innerAttrTbl, "v")));
         }

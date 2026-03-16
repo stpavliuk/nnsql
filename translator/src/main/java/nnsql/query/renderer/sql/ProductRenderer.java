@@ -420,10 +420,13 @@ class ProductRenderer {
         ps.addSelectItem(column(allIdsTbl, "id"));
         ps.addSelectItem(column(attrTbl, "v"));
         ps.setFromItem(allIdsTbl);
-        ps.addJoins(simpleJoin(attrTbl));
-        ps.setWhere(new EqualsTo(
-            column(allIdsTbl, "id" + idIndex),
-            column(attrTbl, "id")));
+        ps.addJoins(join(
+            attrTbl,
+            new EqualsTo(
+                column(allIdsTbl, "id" + idIndex),
+                column(attrTbl, "id")
+            )
+        ));
 
         ctx.addCTE(attrTable(baseName, qualifiedAttr), ps.toString());
     }

@@ -491,14 +491,16 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         var ps = new PlainSelect();
         ps.addSelectItem(new AllColumns());
         ps.setFromItem(leftTable);
-        ps.addJoins(simpleJoin(rightTable));
+        ps.addJoins(join(
+            rightTable,
+            new EqualsTo(
+                column(rightTable, "id"),
+                column(idTbl, "id")
+            )
+        ));
         ps.setWhere(andAll(List.of(
             new EqualsTo(
                 column(leftTable, "id"),
-                column(idTbl, "id")
-            ),
-            new EqualsTo(
-                column(rightTable, "id"),
                 column(idTbl, "id")
             ),
             comp
