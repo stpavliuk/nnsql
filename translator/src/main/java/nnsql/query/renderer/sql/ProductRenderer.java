@@ -24,9 +24,45 @@ class ProductRenderer {
             throw new IllegalStateException("Product must have at least one relation");
         }
 
+        if (product.relations().size() == 1) {
+            addUnaryProductCTEs(ctx, baseName, product.relations().getFirst());
+            return;
+        }
+
         addAllIdsCTE(ctx, baseName, product);
         addIdCTE(ctx, baseName);
         addAttributeCTEs(ctx, baseName, product);
+    }
+
+    private void addUnaryProductCTEs(RenderContext ctx, String baseName, Relation relation) {
+        var idSource = idTableFor(relation);
+
+        var idSelect = new PlainSelect();
+        idSelect.addSelectItem(column(idSource, "id"));
+        idSelect.setFromItem(idSource);
+        ctx.addCTE(idTable(baseName), idSelect.toString());
+
+        switch (relation) {
+            case Relation.Table(var tableName, var alias, var attrs) ->
+                attrs.forEach(attr -> addUnaryAttributeCTE(ctx, baseName, alias, tableName, attr));
+            case Relation.Subquery(var alias, _, var attrs) ->
+                attrs.forEach(attr -> addUnaryAttributeCTE(ctx, baseName, alias, alias, attr));
+        }
+    }
+
+    private void addUnaryAttributeCTE(
+        RenderContext ctx,
+        String baseName,
+        String alias,
+        String tableName,
+        String attr
+    ) {
+        var sourceAttrTbl = table(attrTable(tableName, attr));
+        var ps = new PlainSelect();
+        ps.addSelectItem(column(sourceAttrTbl, "id"));
+        ps.addSelectItem(column(sourceAttrTbl, "v"));
+        ps.setFromItem(sourceAttrTbl);
+        ctx.addCTE(attrTable(baseName, alias + "_" + attr), ps.toString());
     }
 
     private void addAllIdsCTE(RenderContext ctx, String baseName, Product product) {

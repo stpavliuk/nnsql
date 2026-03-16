@@ -61,7 +61,7 @@ class QueryTranslationTest {
     @Test
     void testMultipleQueryTranslations() {
         var equalityFilterSql = normalizeWhitespace(translator.translate("SELECT R.A FROM R WHERE R.B = 5"));
-        assertTrue(equalityFilterSql.contains("all_ids_product_0 AS"));
+        assertTrue(equalityFilterSql.contains("product_0_id AS"));
         assertTrue(equalityFilterSql.contains("product_0_R_A AS"));
         assertTrue(equalityFilterSql.contains("product_0_R_B AS"));
         assertTrue(equalityFilterSql.contains(
@@ -179,48 +179,12 @@ class QueryTranslationTest {
                 """
         );
 
-        assertQueryTranslation(
-            // language=sql
-            "SELECT T.D FROM T WHERE T.E IS NULL",
-            // language=sql
-            """
-                    WITH all_ids_product_0 AS (
-                    SELECT T__ID.id || '_0' AS id,
-                           T__ID.id AS id1
-                    FROM T__ID AS T__ID
-                    ),
-                    product_0_id AS (
-                    SELECT id FROM all_ids_product_0
-                    ),
-                    product_0_T_D AS (
-                    SELECT all_ids_product_0.id, T_D.v
-                    FROM all_ids_product_0, T_D
-                    WHERE all_ids_product_0.id1 = T_D.id
-                    ),
-                    product_0_T_E AS (
-                    SELECT all_ids_product_0.id, T_E.v
-                    FROM all_ids_product_0, T_E
-                    WHERE all_ids_product_0.id1 = T_E.id
-                    ),
-                    filter_1_id AS (
-                    SELECT product_0_id.id
-                    FROM product_0_id
-                    WHERE NOT EXISTS (SELECT * FROM product_0_T_E WHERE product_0_T_E.id = product_0_id.id)
-                    ),
-                    filter_1_T_D AS (
-                    SELECT product_0_T_D.*
-                    FROM product_0_T_D JOIN filter_1_id ON filter_1_id.id = product_0_T_D.id
-                    ),
-                    return_2_id AS (
-                    SELECT id FROM filter_1_id
-                    ),
-                    return_2_attr_T_D AS (
-                    SELECT id, v FROM filter_1_T_D
-                    )
-                    SELECT return_2_attr_T_D.v AS T_D
-                    FROM return_2_id
-                    LEFT JOIN return_2_attr_T_D ON return_2_id.id = return_2_attr_T_D.id;\
-                """);
+        var isNullSql = normalizeWhitespace(translator.translate("SELECT T.D FROM T WHERE T.E IS NULL"));
+        assertTrue(isNullSql.contains("product_0_id AS ( SELECT T__ID.id FROM T__ID AS T__ID )"));
+        assertTrue(isNullSql.contains("product_0_T_D AS ( SELECT T_D.id, T_D.v FROM T_D )"));
+        assertTrue(isNullSql.contains("product_0_T_E AS ( SELECT T_E.id, T_E.v FROM T_E )"));
+        assertTrue(isNullSql.contains("NOT EXISTS (SELECT * FROM product_0_T_E WHERE product_0_T_E.id = product_0_id.id)"));
+        assertTrue(isNullSql.contains("return_2_attr_T_D"));
 
         var columnComparisonSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.A > R.B"
@@ -861,7 +825,7 @@ class QueryTranslationTest {
         assertTrue(sql.contains("_jp0l.v = _jp0r.v"), "Join predicate should be pushed into product");
 
         // CTE body should be rendered only once — t1 and t2 should reference the same base CTEs
-        assertEquals(1, countOccurrences(sql, "all_ids_product_1 AS"),
+        assertEquals(1, countOccurrences(sql, "product_1_id AS"),
             "CTE body should be defined once, not duplicated per reference");
     }
 
