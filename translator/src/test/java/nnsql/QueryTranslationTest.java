@@ -431,6 +431,17 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testOrBranchesInferLocalPushdownPredicates() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R, S WHERE (R.A > 10 AND S.C = 1) OR (R.A > 20 AND S.C = 2)"
+        ));
+
+        assertTrue(sql.contains("R__ID AS ( SELECT id FROM return_"));
+        assertTrue(sql.contains("S__ID AS ( SELECT id FROM return_"));
+        assertTrue(sql.contains("product_0_R_A.v > 10.0") || sql.contains("product_0_R_A.v > 20.0"));
+    }
+
+    @Test
     void testNestedSubqueriesDoNotWrapRepeatedBaseAliases() {
         var sql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.B = (SELECT MIN(R.B) FROM R WHERE R.A > 0)"

@@ -3,6 +3,7 @@ package nnsql.query.optim;
 import nnsql.query.ir.*;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -336,7 +337,12 @@ public class JoinPredicatePushdown {
                 .filter(relIndex -> product.relations().get(relIndex) instanceof Relation.Table)
                 .ifPresentOrElse(
                     relIndex -> perRelationConditions.get(relIndex).add(operand),
-                    () -> remaining.add(operand)
+                    () -> {
+                        inferOrBranchLocalPredicates(operand, product).forEach(
+                            (relIndex, inferred) -> perRelationConditions.get(relIndex).add(inferred)
+                        );
+                        remaining.add(operand);
+                    }
                 );
         }
 
@@ -368,6 +374,50 @@ public class JoinPredicatePushdown {
             default -> Optional.of(Condition.and(remaining));
         };
         return new LocalPredicateExtraction(relations, remainingCondition);
+    }
+
+    private static java.util.Map<Integer, Condition> inferOrBranchLocalPredicates(Condition condition, Product product) {
+        if (!(condition instanceof Condition.Or(var branches))) {
+            return java.util.Map.of();
+        }
+
+        var branchOperands = branches.stream()
+            .map(branch -> switch (branch) {
+                case Condition.And(var ops) -> ops;
+                default -> List.of(branch);
+            })
+            .toList();
+
+        var inferred = new LinkedHashMap<Integer, Condition>();
+        for (int relIndex = 0; relIndex < product.relations().size(); relIndex++) {
+            var currentRelIndex = relIndex;
+            if (!(product.relations().get(relIndex) instanceof Relation.Table)) {
+                continue;
+            }
+
+            var branchLocalConditions = new ArrayList<Condition>();
+            var inferredForRelation = true;
+            for (var branch : branchOperands) {
+                var localOperands = branch.stream()
+                    .filter(operand -> findSingleRelationIndex(operand, product).equals(Optional.of(currentRelIndex)))
+                    .toList();
+                if (localOperands.isEmpty()) {
+                    inferredForRelation = false;
+                    break;
+                }
+                branchLocalConditions.add(localOperands.size() == 1
+                    ? localOperands.getFirst()
+                    : Condition.and(localOperands));
+            }
+
+            if (inferredForRelation) {
+                inferred.put(currentRelIndex, branchLocalConditions.size() == 1
+                    ? branchLocalConditions.getFirst()
+                    : Condition.or(branchLocalConditions));
+            }
+        }
+
+        return inferred;
     }
 
     private static Relation wrapRelationWithFilter(Relation relation, Condition condition, int nodeId) {
