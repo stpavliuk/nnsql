@@ -452,6 +452,24 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testNestedSubqueriesPushSafeLocalPredicatesWhenAliasesDoNotCollide() {
+        var sql = normalizeWhitespace(translator.translate(
+            """
+                SELECT q.p_partkey
+                FROM (
+                    SELECT p_partkey
+                    FROM part, lineitem
+                    WHERE p_partkey = l_partkey
+                      AND p_brand LIKE 'Brand%'
+                ) q
+                """
+        ));
+
+        assertTrue(sql.contains("part__ID AS ( SELECT id FROM return_"));
+        assertTrue(sql.contains("LIKE 'Brand%'"));
+    }
+
+    @Test
     void rejectsExplicitJoinSyntax() {
         var error = assertThrows(UnsupportedOperationException.class, () -> translator.translate(
             "SELECT customer.c_custkey FROM customer LEFT JOIN S ON customer.c_custkey = S.B"
