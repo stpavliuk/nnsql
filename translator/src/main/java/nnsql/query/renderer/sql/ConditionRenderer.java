@@ -44,7 +44,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
                 .orElse(false)) {
                 continue;
             }
-            fallbackConditions.add(render(operand, relationName, false, ctx));
+            fallbackConditions.add(paren(render(operand, relationName, false, ctx)));
         }
 
         if (inlinePredicates.size() < 3 && inlinedCorrelatedComparisons.isEmpty()) {

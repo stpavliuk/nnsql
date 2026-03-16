@@ -113,7 +113,10 @@ class QueryTranslationTest {
                     SELECT R__ID.id || '_' || S__ID.id || '_0' AS id,
                            R__ID.id AS id1,
                            S__ID.id AS id2
-                    FROM R__ID AS R__ID, S__ID AS S__ID
+                    FROM R__ID AS R__ID
+                    JOIN R_B AS _jp0l ON R__ID.id = _jp0l.id
+                    JOIN S_B AS _jp0r ON _jp0l.v = _jp0r.v
+                    JOIN S__ID AS S__ID ON _jp0r.id = S__ID.id
                 ),
                 product_0_id AS (
                     SELECT id FROM all_ids_product_0
@@ -123,43 +126,24 @@ class QueryTranslationTest {
                     FROM all_ids_product_0, R_A
                     WHERE all_ids_product_0.id1 = R_A.id
                 ),
-                product_0_R_B AS (
-                    SELECT all_ids_product_0.id, R_B.v
-                    FROM all_ids_product_0, R_B
-                    WHERE all_ids_product_0.id1 = R_B.id
+                return_1_id AS (
+                    SELECT id FROM product_0_id
                 ),
-                product_0_S_B AS (
-                    SELECT all_ids_product_0.id, S_B.v
-                    FROM all_ids_product_0, S_B
-                    WHERE all_ids_product_0.id2 = S_B.id
+                return_1_attr_R_A AS (
+                    SELECT id, v FROM product_0_R_A
                 ),
-                filter_1_id AS (
-                    SELECT product_0_id.id
-                    FROM product_0_id
-                    WHERE EXISTS (SELECT * FROM product_0_R_B, product_0_S_B WHERE product_0_R_B.id = product_0_id.id AND product_0_S_B.id = product_0_id.id AND product_0_R_B.v = product_0_S_B.v)
+                duplelim_2_id AS (
+                    SELECT return_1_id.id
+                    FROM return_1_id
+                    WHERE NOT EXISTS (SELECT * FROM return_1_id R1 WHERE R1.id < return_1_id.id AND (EXISTS (SELECT * FROM return_1_attr_R_A TEMP1, return_1_attr_R_A TEMP2 WHERE TEMP1.id = return_1_id.id AND TEMP2.id = R1.id AND TEMP1.v = TEMP2.v) OR NOT EXISTS (SELECT * FROM return_1_attr_R_A WHERE return_1_attr_R_A.id = return_1_id.id OR return_1_attr_R_A.id = R1.id)))
                 ),
-                filter_1_R_A AS (
-                    SELECT product_0_R_A.*
-                    FROM product_0_R_A JOIN filter_1_id ON filter_1_id.id = product_0_R_A.id
-                ),
-                return_2_id AS (
-                    SELECT id FROM filter_1_id
-                ),
-                return_2_attr_R_A AS (
-                    SELECT id, v FROM filter_1_R_A
-                ),
-                duplelim_3_id AS (
-                    SELECT return_2_id.id
-                    FROM return_2_id
-                    WHERE NOT EXISTS (SELECT * FROM return_2_id R1 WHERE R1.id < return_2_id.id AND (EXISTS (SELECT * FROM return_2_attr_R_A TEMP1, return_2_attr_R_A TEMP2 WHERE TEMP1.id = return_2_id.id AND TEMP2.id = R1.id AND TEMP1.v = TEMP2.v) OR NOT EXISTS (SELECT * FROM return_2_attr_R_A WHERE return_2_attr_R_A.id = return_2_id.id OR return_2_attr_R_A.id = R1.id)))
-                ),
-                duplelim_3_attr_R_A AS (
-                    SELECT return_2_attr_R_A.*
-                    FROM return_2_attr_R_A JOIN duplelim_3_id ON duplelim_3_id.id = return_2_attr_R_A.id
+                duplelim_2_attr_R_A AS (
+                    SELECT return_1_attr_R_A.*
+                    FROM return_1_attr_R_A JOIN duplelim_2_id ON duplelim_2_id.id = return_1_attr_R_A.id
                 )
-                SELECT duplelim_3_attr_R_A.v AS R_A
-                FROM duplelim_3_id
-                LEFT JOIN duplelim_3_attr_R_A ON duplelim_3_id.id = duplelim_3_attr_R_A.id;\
+                SELECT duplelim_2_attr_R_A.v AS R_A
+                FROM duplelim_2_id
+                LEFT JOIN duplelim_2_attr_R_A ON duplelim_2_id.id = duplelim_2_attr_R_A.id;\
                 """
         );
 
@@ -172,7 +156,10 @@ class QueryTranslationTest {
                     SELECT R__ID.id || '_' || S__ID.id || '_0' AS id,
                            R__ID.id AS id1,
                            S__ID.id AS id2
-                    FROM R__ID AS R__ID, S__ID AS S__ID
+                    FROM R__ID AS R__ID
+                    JOIN R_B AS _jp0l ON R__ID.id = _jp0l.id
+                    JOIN S_B AS _jp0r ON _jp0l.v = _jp0r.v
+                    JOIN S__ID AS S__ID ON _jp0r.id = S__ID.id
                 ),
                 product_0_id AS (
                     SELECT id FROM all_ids_product_0
@@ -182,62 +169,39 @@ class QueryTranslationTest {
                     FROM all_ids_product_0, R_A
                     WHERE all_ids_product_0.id1 = R_A.id
                 ),
-                product_0_R_B AS (
-                    SELECT all_ids_product_0.id, R_B.v
-                    FROM all_ids_product_0, R_B
-                    WHERE all_ids_product_0.id1 = R_B.id
-                ),
-                product_0_S_B AS (
-                    SELECT all_ids_product_0.id, S_B.v
-                    FROM all_ids_product_0, S_B
-                    WHERE all_ids_product_0.id2 = S_B.id
-                ),
                 product_0_S_C AS (
                     SELECT all_ids_product_0.id, S_C.v
                     FROM all_ids_product_0, S_C
                     WHERE all_ids_product_0.id2 = S_C.id
                 ),
-                filter_1_id AS (
+                group_1_id AS (
                     SELECT product_0_id.id
                     FROM product_0_id
-                    WHERE EXISTS (SELECT * FROM product_0_R_B, product_0_S_B WHERE product_0_R_B.id = product_0_id.id AND product_0_S_B.id = product_0_id.id AND product_0_R_B.v = product_0_S_B.v)
+                    WHERE NOT EXISTS (SELECT * FROM product_0_id R1 WHERE R1.id < product_0_id.id AND (EXISTS (SELECT * FROM product_0_R_A a1, product_0_R_A a2 WHERE a1.id = product_0_id.id AND a2.id = R1.id AND a1.v = a2.v) OR NOT EXISTS (SELECT * FROM product_0_R_A WHERE product_0_R_A.id = product_0_id.id OR product_0_R_A.id = R1.id)))
                 ),
-                filter_1_R_A AS (
+                group_1_R_A AS (
                     SELECT product_0_R_A.*
-                    FROM product_0_R_A JOIN filter_1_id ON filter_1_id.id = product_0_R_A.id
+                    FROM product_0_R_A JOIN group_1_id ON group_1_id.id = product_0_R_A.id
                 ),
-                filter_1_S_C AS (
-                    SELECT product_0_S_C.*
-                    FROM product_0_S_C JOIN filter_1_id ON filter_1_id.id = product_0_S_C.id
+                group_1_total AS (
+                    SELECT group_1_id.id, SUM(product_0_S_C.v) AS v
+                    FROM group_1_id, product_0_id input_id, product_0_S_C
+                    WHERE product_0_S_C.id = input_id.id AND (EXISTS (SELECT * FROM product_0_R_A g1, product_0_R_A g2 WHERE g1.id = input_id.id AND g2.id = group_1_id.id AND g1.v = g2.v) OR NOT EXISTS (SELECT * FROM product_0_R_A WHERE product_0_R_A.id = input_id.id OR product_0_R_A.id = group_1_id.id))
+                    GROUP BY group_1_id.id
                 ),
-                group_2_id AS (
-                    SELECT filter_1_id.id
-                    FROM filter_1_id
-                    WHERE NOT EXISTS (SELECT * FROM filter_1_id R1 WHERE R1.id < filter_1_id.id AND (EXISTS (SELECT * FROM filter_1_R_A a1, filter_1_R_A a2 WHERE a1.id = filter_1_id.id AND a2.id = R1.id AND a1.v = a2.v) OR NOT EXISTS (SELECT * FROM filter_1_R_A WHERE filter_1_R_A.id = filter_1_id.id OR filter_1_R_A.id = R1.id)))
+                return_2_id AS (
+                SELECT id FROM group_1_id
                 ),
-                group_2_R_A AS (
-                    SELECT filter_1_R_A.*
-                    FROM filter_1_R_A JOIN group_2_id ON group_2_id.id = filter_1_R_A.id
+                return_2_attr_R_A AS (
+                    SELECT id, v FROM group_1_R_A
                 ),
-                group_2_total AS (
-                    SELECT group_2_id.id, SUM(filter_1_S_C.v) AS v
-                    FROM group_2_id, filter_1_id input_id, filter_1_S_C
-                    WHERE filter_1_S_C.id = input_id.id AND (EXISTS (SELECT * FROM filter_1_R_A g1, filter_1_R_A g2 WHERE g1.id = input_id.id AND g2.id = group_2_id.id AND g1.v = g2.v) OR NOT EXISTS (SELECT * FROM filter_1_R_A WHERE filter_1_R_A.id = input_id.id OR filter_1_R_A.id = group_2_id.id))
-                    GROUP BY group_2_id.id
-                ),
-                return_3_id AS (
-                SELECT id FROM group_2_id
-                ),
-                return_3_attr_R_A AS (
-                    SELECT id, v FROM group_2_R_A
-                ),
-                return_3_attr_total AS (
-                    SELECT id, v FROM group_2_total
+                return_2_attr_total AS (
+                    SELECT id, v FROM group_1_total
                 )
-                SELECT return_3_attr_R_A.v AS R_A, return_3_attr_total.v AS total
-                    FROM return_3_id
-                    LEFT JOIN return_3_attr_R_A ON return_3_id.id = return_3_attr_R_A.id
-                    LEFT JOIN return_3_attr_total ON return_3_id.id = return_3_attr_total.id;\
+                SELECT return_2_attr_R_A.v AS R_A, return_2_attr_total.v AS total
+                    FROM return_2_id
+                    LEFT JOIN return_2_attr_R_A ON return_2_id.id = return_2_attr_R_A.id
+                    LEFT JOIN return_2_attr_total ON return_2_id.id = return_2_attr_total.id;\
                 """
         );
 
@@ -1233,8 +1197,7 @@ class QueryTranslationTest {
         assertTrue(sql.contains("t1__ID"), "t1 alias should produce t1__ID");
         assertTrue(sql.contains("t2__ID"), "t2 alias should produce t2__ID");
         assertTrue(sql.contains("product_0_t1_A"), "t1.A should be accessible");
-        assertTrue(sql.contains("product_0_t2_B"), "t2.B should be accessible");
-        assertTrue(sql.contains("product_0_t1_A.v = product_0_t2_B.v"), "Join condition");
+        assertTrue(sql.contains("_jp0l.v = _jp0r.v"), "Join predicate should be pushed into product");
 
         // CTE body should be rendered only once — t1 and t2 should reference the same base CTEs
         assertEquals(1, countOccurrences(sql, "all_ids_product_1 AS"),

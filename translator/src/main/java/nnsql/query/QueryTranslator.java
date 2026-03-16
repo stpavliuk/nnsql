@@ -4,6 +4,7 @@ import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import net.sf.jsqlparser.statement.select.PlainSelect;
 import nnsql.query.builder.IRBuilder;
 import nnsql.query.ir.IRNode;
+import nnsql.query.optim.JoinPredicatePushdown;
 import nnsql.query.renderer.IRRenderer;
 
 public record QueryTranslator(IRBuilder irBuilder, IRRenderer renderer) {
@@ -13,7 +14,8 @@ public record QueryTranslator(IRBuilder irBuilder, IRRenderer renderer) {
 
     public String translate(String sqlQuery) {
         var select = parseSelect(sqlQuery);
-        return renderer.render(irBuilder.build(select));
+        var ir = JoinPredicatePushdown.optimize(irBuilder.build(select));
+        return renderer.render(ir);
     }
 
     public IRNode toIR(String sqlQuery) {
