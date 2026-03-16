@@ -269,13 +269,11 @@ class ProductRenderer {
     private PlainSelect buildSelectItems(Product product) {
         var relations = product.relations();
 
-        var idRefs = relations.stream()
-            .map(rel -> (Expression) column(rel.alias() + "__ID", "id"))
-            .toList();
+        var hashArgs = new ArrayList<Expression>();
+        relations.forEach(rel -> hashArgs.add(column(rel.alias() + "__ID", "id")));
+        hashArgs.add(new LongValue(product.nodeId()));
 
-        var idConcat = concatSep(idRefs, "_");
-        Expression compositeId = new net.sf.jsqlparser.expression.operators.arithmetic.Concat(
-            idConcat, new StringValue("_" + product.nodeId()));
+        Expression compositeId = fn("hash", hashArgs.toArray(Expression[]::new));
 
         var ps = new PlainSelect();
         ps.addSelectItem(compositeId, new Alias("id", true));

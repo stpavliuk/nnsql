@@ -76,7 +76,7 @@ class QueryTranslationTest {
             // language=sql
             """
                 WITH all_ids_product_0 AS (
-                    SELECT R__ID.id || '_' || S__ID.id || '_0' AS id,
+                    SELECT hash(R__ID.id, S__ID.id, 0) AS id,
                            R__ID.id AS id1,
                            S__ID.id AS id2
                     FROM R__ID AS R__ID
@@ -119,7 +119,7 @@ class QueryTranslationTest {
             // language=sql
             """
                     WITH all_ids_product_0 AS (
-                    SELECT R__ID.id || '_' || S__ID.id || '_0' AS id,
+                    SELECT hash(R__ID.id, S__ID.id, 0) AS id,
                            R__ID.id AS id1,
                            S__ID.id AS id2
                     FROM R__ID AS R__ID
