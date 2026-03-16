@@ -12,7 +12,9 @@ import nnsql.query.optim.JoinPredicate;
 import nnsql.query.renderer.RenderContext;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.stream.IntStream;
 
 import static nnsql.query.renderer.sql.Sql.*;
@@ -141,32 +143,33 @@ class ProductRenderer {
         ps.setFromItem(idTableFor(relations.getFirst()));
 
         var joins = new ArrayList<Join>();
+        var joinedAttrAliases = new LinkedHashMap<RelationAttr, String>();
+        int[] aliasCounter = {0};
         for (int si = 0; si < steps.size(); si++) {
             var step = steps.get(si);
             var existingRel = relations.get(step.existingRelIndex());
             var newRel = relations.get(step.newRelIndex());
 
-            var existingAttrTbl = tableAs(
-                tableNameFor(existingRel) + "_" + step.existingAttr(),
-                "_jp" + si + "l");
-            var newAttrTbl = tableAs(
-                tableNameFor(newRel) + "_" + step.newAttr(),
-                "_jp" + si + "r");
+            var existingAttrAlias = ensureJoinedAttributeAlias(
+                joins,
+                joinedAttrAliases,
+                new RelationAttr(step.existingRelIndex(), step.existingAttr()),
+                relations,
+                aliasCounter
+            );
+            var newAttrAlias = joinNewRelationAttribute(
+                joins,
+                joinedAttrAliases,
+                new RelationAttr(step.newRelIndex(), step.newAttr()),
+                existingAttrAlias,
+                relations,
+                aliasCounter
+            );
             var newIdTbl = idTableFor(newRel);
-
-            joins.add(join(existingAttrTbl,
-                new EqualsTo(
-                    column(existingRel.alias() + "__ID", "id"),
-                    column("_jp" + si + "l", "id"))));
-
-            joins.add(join(newAttrTbl,
-                new EqualsTo(
-                    column("_jp" + si + "l", "v"),
-                    column("_jp" + si + "r", "v"))));
 
             joins.add(join(newIdTbl,
                 new EqualsTo(
-                    column("_jp" + si + "r", "id"),
+                    column(newAttrAlias, "id"),
                     column(newRel.alias() + "__ID", "id"))));
         }
 
@@ -178,28 +181,24 @@ class ProductRenderer {
         var extraConditions = new ArrayList<Expression>();
         for (int pi = 0; pi < predicates.size(); pi++) {
             var jp = predicates.get(pi);
-            var leftRel = relations.get(jp.leftRelIndex());
-            var rightRel = relations.get(jp.rightRelIndex());
-
-            var leftAttrTbl = tableAs(
-                tableNameFor(leftRel) + "_" + jp.leftAttr(),
-                "_jpx" + pi + "l");
-            var rightAttrTbl = tableAs(
-                tableNameFor(rightRel) + "_" + jp.rightAttr(),
-                "_jpx" + pi + "r");
-
-            joins.add(join(leftAttrTbl,
-                new EqualsTo(
-                    column(leftRel.alias() + "__ID", "id"),
-                    column("_jpx" + pi + "l", "id"))));
-            joins.add(join(rightAttrTbl,
-                new EqualsTo(
-                    column(rightRel.alias() + "__ID", "id"),
-                    column("_jpx" + pi + "r", "id"))));
+            var leftAttrAlias = ensureJoinedAttributeAlias(
+                joins,
+                joinedAttrAliases,
+                new RelationAttr(jp.leftRelIndex(), jp.leftAttr()),
+                relations,
+                aliasCounter
+            );
+            var rightAttrAlias = ensureJoinedAttributeAlias(
+                joins,
+                joinedAttrAliases,
+                new RelationAttr(jp.rightRelIndex(), jp.rightAttr()),
+                relations,
+                aliasCounter
+            );
 
             extraConditions.add(new EqualsTo(
-                column("_jpx" + pi + "l", "v"),
-                column("_jpx" + pi + "r", "v")));
+                column(leftAttrAlias, "v"),
+                column(rightAttrAlias, "v")));
         }
 
         if (!joins.isEmpty()) {
@@ -211,6 +210,60 @@ class ProductRenderer {
         }
 
         ctx.addCTE("all_ids_" + baseName, ps.toString());
+    }
+
+    private String ensureJoinedAttributeAlias(
+        ArrayList<Join> joins,
+        Map<RelationAttr, String> joinedAttrAliases,
+        RelationAttr relationAttr,
+        java.util.List<Relation> relations,
+        int[] aliasCounter
+    ) {
+        var existing = joinedAttrAliases.get(relationAttr);
+        if (existing != null) {
+            return existing;
+        }
+
+        var relation = relations.get(relationAttr.relIndex());
+        var alias = "_jp" + aliasCounter[0]++;
+        joins.add(join(
+            tableAs(tableNameFor(relation) + "_" + relationAttr.attr(), alias),
+            new EqualsTo(
+                column(relation.alias() + "__ID", "id"),
+                column(alias, "id")
+            )
+        ));
+        joinedAttrAliases.put(relationAttr, alias);
+        return alias;
+    }
+
+    private String joinNewRelationAttribute(
+        ArrayList<Join> joins,
+        Map<RelationAttr, String> joinedAttrAliases,
+        RelationAttr relationAttr,
+        String existingAttrAlias,
+        java.util.List<Relation> relations,
+        int[] aliasCounter
+    ) {
+        var existing = joinedAttrAliases.get(relationAttr);
+        if (existing != null) {
+            return existing;
+        }
+
+        var relation = relations.get(relationAttr.relIndex());
+        var alias = "_jp" + aliasCounter[0]++;
+        joins.add(join(
+            tableAs(tableNameFor(relation) + "_" + relationAttr.attr(), alias),
+            new EqualsTo(
+                column(existingAttrAlias, "v"),
+                column(alias, "v")
+            )
+        ));
+        joinedAttrAliases.put(relationAttr, alias);
+        return alias;
+    }
+
+    private record RelationAttr(int relIndex, String attr) {
     }
 
     private PlainSelect buildSelectItems(Product product) {

@@ -7,6 +7,7 @@ import org.junit.jupiter.api.*;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -79,9 +80,9 @@ class QueryTranslationTest {
                            R__ID.id AS id1,
                            S__ID.id AS id2
                     FROM R__ID AS R__ID
-                    JOIN R_B AS _jp0l ON R__ID.id = _jp0l.id
-                    JOIN S_B AS _jp0r ON _jp0l.v = _jp0r.v
-                    JOIN S__ID AS S__ID ON _jp0r.id = S__ID.id
+                    JOIN R_B AS _jp0 ON R__ID.id = _jp0.id
+                    JOIN S_B AS _jp1 ON _jp0.v = _jp1.v
+                    JOIN S__ID AS S__ID ON _jp1.id = S__ID.id
                 ),
                 product_0_id AS (
                     SELECT id FROM all_ids_product_0
@@ -122,9 +123,9 @@ class QueryTranslationTest {
                            R__ID.id AS id1,
                            S__ID.id AS id2
                     FROM R__ID AS R__ID
-                    JOIN R_B AS _jp0l ON R__ID.id = _jp0l.id
-                    JOIN S_B AS _jp0r ON _jp0l.v = _jp0r.v
-                    JOIN S__ID AS S__ID ON _jp0r.id = S__ID.id
+                    JOIN R_B AS _jp0 ON R__ID.id = _jp0.id
+                    JOIN S_B AS _jp1 ON _jp0.v = _jp1.v
+                    JOIN S__ID AS S__ID ON _jp1.id = S__ID.id
                 ),
                 product_0_id AS (
                     SELECT id FROM all_ids_product_0
@@ -418,6 +419,15 @@ class QueryTranslationTest {
         assertTrue(sql.contains("S__ID AS ( SELECT id FROM return_"));
         assertFalse(sql.contains("product_0_S_C.v IN (SELECT v FROM return_"));
         assertTrue(sql.contains("T_E.v > 0.0"));
+    }
+
+    @Test
+    void testRepeatedJoinAttributesAreJoinedOnceInProductCte() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R, S, T WHERE R.B = S.B AND R.B = T.D"
+        ));
+
+        assertEquals(1, Pattern.compile("JOIN R_B AS ").matcher(sql).results().count());
     }
 
     @Test
@@ -872,7 +882,7 @@ class QueryTranslationTest {
         assertTrue(sql.contains("t1__ID"), "t1 alias should produce t1__ID");
         assertTrue(sql.contains("t2__ID"), "t2 alias should produce t2__ID");
         assertTrue(sql.contains("product_0_t1_A"), "t1.A should be accessible");
-        assertTrue(sql.contains("_jp0l.v = _jp0r.v"), "Join predicate should be pushed into product");
+        assertTrue(sql.matches(".*_jp\\d+\\.v = _jp\\d+\\.v.*"), "Join predicate should be pushed into product");
 
         // CTE body should be rendered only once — t1 and t2 should reference the same base CTEs
         assertEquals(1, countOccurrences(sql, "product_1_id AS"),
