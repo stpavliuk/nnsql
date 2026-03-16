@@ -774,6 +774,27 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testComputedAggregateExpressionInSelect() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT SUM(R.B) * 2 AS total FROM R"
+        ));
+
+        assertTrue(sql.contains("SUM(product_0_R_B.v) AS agg_expr_1"));
+        assertTrue(sql.contains("group_1_agg_expr_1.v * 2.0 AS v"));
+        assertTrue(sql.contains("return_2_attr_total"));
+    }
+
+    @Test
+    void testHavingWithRawAggregateExpression() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R GROUP BY R.A HAVING SUM(R.B * 2) > 10"
+        ));
+
+        assertTrue(sql.contains("SUM(product_0_R_B.v * 2.0) AS agg_expr_1"));
+        assertTrue(sql.contains("group_1_agg_expr_1.v > 10.0"));
+    }
+
+    @Test
     void testOrderByAndLimit() {
         var orderedSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R ORDER BY R.A LIMIT 10"

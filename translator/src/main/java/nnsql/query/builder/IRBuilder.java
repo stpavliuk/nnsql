@@ -83,6 +83,7 @@ public class IRBuilder {
             boolean hasAggregates = hasAggregatesInSelect(select);
             boolean hasGroupBy = select.getGroupBy() != null;
             var deduplicatedCorrelations = deduplicateCorrelations(correlations);
+            GroupedQueryPreparation groupedQuery = null;
 
             if (!deduplicatedCorrelations.isEmpty()) {
                 if (correlationCollectorStack.isEmpty()) {
@@ -97,18 +98,28 @@ public class IRBuilder {
                 var correlationGroupingAttrs = deduplicatedCorrelations.stream()
                     .map(IRExpression.Correlation::innerAttribute)
                     .toList();
-                pipeline = addGroupBy(select, pipeline, correlationGroupingAttrs);
+                groupedQuery = prepareGroupedQuery(select, availableAttrs, correlationGroupingAttrs);
+                pipeline = pipeline.group(
+                    groupedQuery.groupingAttributes(),
+                    groupedQuery.aggregates(),
+                    groupedQuery.outputAttributes()
+                );
             }
 
             if (select.getHaving() != null) {
                 var attributes = AttributeResolver.collectFrom(pipeline.build());
-                var condition = toCondition(select.getHaving());
-                var qualifiedCondition = AttributeResolver.qualifyCondition(condition, attributes);
-                pipeline = pipeline.aggFilter(qualifiedCondition, attributes);
+                var condition = groupedQuery != null
+                    ? groupedQuery.havingCondition().orElseThrow(() -> new IllegalStateException(
+                        "Grouped query analysis is missing HAVING condition"
+                    ))
+                    : AttributeResolver.qualifyCondition(toCondition(select.getHaving()), attributes);
+                pipeline = pipeline.aggFilter(condition, attributes);
             }
 
             if (hasGroupBy || hasAggregates) {
-                pipeline = buildReturnForGroupBy(select, pipeline);
+                pipeline = groupedQuery.selectStar()
+                    ? pipeline.returnAll()
+                    : pipeline.returnSelected(groupedQuery.selectedAttributes());
             } else {
                 pipeline = buildReturnForNonGroupBy(select, pipeline);
             }
@@ -814,11 +825,95 @@ public class IRBuilder {
 
     private boolean hasAggregatesInSelect(PlainSelect select) {
         for (var item : select.getSelectItems()) {
-            if (item.getExpression() instanceof Function fn && isAggregate(fn)) {
+            if (item.getExpression() instanceof AllColumns) {
+                continue;
+            }
+            if (containsAggregate(toExpression(item.getExpression()))) {
                 return true;
             }
         }
         return false;
+    }
+
+    private GroupedQueryPreparation prepareGroupedQuery(
+        PlainSelect select,
+        List<String> availableAttrs,
+        List<String> extraGroupingAttributes
+    ) {
+        var selectAliasSourceAttributes = new LinkedHashMap<String, String>();
+        var selectAliasUnsupportedExpressionTypes = new LinkedHashMap<String, String>();
+        buildGroupByAliasBindings(
+            select.getSelectItems(),
+            availableAttrs,
+            selectAliasSourceAttributes,
+            selectAliasUnsupportedExpressionTypes
+        );
+
+        List<String> groupingAttributes;
+        if (select.getGroupBy() != null) {
+            var groupByExprs = new ArrayList<String>();
+            for (var expr : select.getGroupBy().getGroupByExpressionList()) {
+                if (expr instanceof Column col) {
+                    groupByExprs.add(
+                        resolveGroupByAttribute(
+                            col,
+                            availableAttrs,
+                            selectAliasSourceAttributes,
+                            selectAliasUnsupportedExpressionTypes
+                        )
+                    );
+                }
+            }
+            groupingAttributes = groupByExprs;
+        } else {
+            groupingAttributes = new ArrayList<>();
+        }
+
+        for (var attr : extraGroupingAttributes) {
+            if (!groupingAttributes.contains(attr)) {
+                groupingAttributes.add(attr);
+            }
+        }
+
+        var collector = new AggregateCollector(availableAttrs);
+        var selectedAttrs = new ArrayList<AttributeRef>();
+        var selectItems = select.getSelectItems();
+        boolean selectStar = isSelectAll(selectItems);
+
+        if (!selectStar) {
+            for (int i = 0; i < selectItems.size(); i++) {
+                buildGroupedAttributeRef(selectItems.get(i), availableAttrs, i + 1, collector)
+                    .stream()
+                    .forEach(selectedAttrs::add);
+            }
+        }
+
+        var outputAttributes = new ArrayList<>(groupingAttributes);
+        outputAttributes.addAll(collector.aggregates().stream()
+            .map(IRExpression.Aggregate::alias)
+            .filter(alias -> !outputAttributes.contains(alias))
+            .toList());
+
+        var havingCondition = Option.ofNullable(select.getHaving())
+            .map(this::toCondition)
+            .map(condition -> {
+                var rewrittenCondition = rewriteAggregateCondition(condition, collector);
+                var havingAvailableAttrs = new ArrayList<>(availableAttrs);
+                collector.aggregates().stream()
+                    .map(IRExpression.Aggregate::alias)
+                    .filter(alias -> !havingAvailableAttrs.contains(alias))
+                    .forEach(havingAvailableAttrs::add);
+                return qualifyGroupedCondition(rewrittenCondition, havingAvailableAttrs);
+            });
+
+        return new GroupedQueryPreparation(
+            groupingAttributes,
+            collector.aggregates(),
+            outputAttributes,
+            havingCondition,
+            selectedAttrs,
+            selectStar
+        );
     }
 
     private IRPipeline buildReturnForNonGroupBy(PlainSelect select, IRPipeline pipeline) {
@@ -1166,8 +1261,14 @@ public class IRBuilder {
             case IRExpression.ColumnRef(var columnName) ->
                 new IRExpression.ColumnRef(AttributeResolver.resolve(columnName, availableAttrs));
             case IRExpression.Literal lit -> lit;
-            case IRExpression.Aggregate _,
-                 IRExpression.ScalarSubquery _ -> expr;
+            case IRExpression.Aggregate(var function, var argument, var alias, var distinct) ->
+                new IRExpression.Aggregate(
+                    function,
+                    qualifyAggregateArgument(argument, availableAttrs),
+                    alias,
+                    distinct
+                );
+            case IRExpression.ScalarSubquery _ -> expr;
             case IRExpression.BinaryOp(var left, var op, var right) ->
                 new IRExpression.BinaryOp(
                     qualifyAggregateArgument(left, availableAttrs),
@@ -1202,5 +1303,264 @@ public class IRBuilder {
         Option<IRExpression> expr, List<String> availableAttrs
     ) {
         return expr.map(value -> qualifyAggregateArgument(value, availableAttrs));
+    }
+
+    private Option<AttributeRef> buildGroupedAttributeRef(
+        SelectItem<?> item,
+        List<String> availableAttrs,
+        int position,
+        AggregateCollector collector
+    ) {
+        if (item.getExpression() instanceof AllColumns) {
+            return Option.none();
+        }
+
+        var rawExpr = toExpression(item.getExpression());
+        if (!containsAggregate(rawExpr)) {
+            return Option.some(buildGroupByAttributeRef(item, availableAttrs, position).orElseThrow(() ->
+                new IllegalStateException("Expected grouped attribute reference")
+            ));
+        }
+
+        var qualifiedExpr = qualifyAggregateArgument(rawExpr, availableAttrs);
+
+        if (qualifiedExpr instanceof IRExpression.Aggregate aggregate) {
+            var alias = selectItemAlias(item, OutputAlias.aggregate(aggregate));
+            collector.add(new IRExpression.Aggregate(
+                aggregate.function(),
+                aggregate.argument(),
+                alias,
+                aggregate.distinct()
+            ));
+            return Option.some(AttributeRef.attr(alias, alias));
+        }
+
+        var rewrittenExpr = rewriteAggregateExpression(qualifiedExpr, collector);
+        var alias = selectItemAlias(item, OutputAlias.expression(position));
+        return Option.some(AttributeRef.expr(rewrittenExpr, alias));
+    }
+
+    private boolean containsAggregate(IRExpression expr) {
+        return switch (expr) {
+            case IRExpression.Aggregate _ -> true;
+            case IRExpression.BinaryOp(var left, _, var right) ->
+                containsAggregate(left) || containsAggregate(right);
+            case IRExpression.Cast(var inner, _) -> containsAggregate(inner);
+            case IRExpression.FunctionCall(_, var arguments) ->
+                arguments.stream().anyMatch(this::containsAggregate);
+            case IRExpression.CaseWhen(var whens, var elseExpr) ->
+                whens.stream().anyMatch(when ->
+                    containsAggregateInCondition(when.condition()) || containsAggregate(when.result()))
+                    || elseExpr.stream().anyMatch(this::containsAggregate);
+            case IRExpression.ColumnRef _, IRExpression.Literal _, IRExpression.ScalarSubquery _ -> false;
+        };
+    }
+
+    private boolean containsAggregateInCondition(Condition condition) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, _) ->
+                containsAggregate(left) || containsAggregate(right);
+            case Condition.IsNull _ -> false;
+            case Condition.Like(var left, var pattern, _) ->
+                containsAggregate(left) || containsAggregate(pattern);
+            case Condition.Exists _, Condition.InSubquery _ -> false;
+            case Condition.And(var operands) ->
+                operands.stream().anyMatch(this::containsAggregateInCondition);
+            case Condition.Or(var operands) ->
+                operands.stream().anyMatch(this::containsAggregateInCondition);
+            case Condition.Not(var operand) -> containsAggregateInCondition(operand);
+        };
+    }
+
+    private IRExpression rewriteAggregateExpression(IRExpression expr, AggregateCollector collector) {
+        return switch (expr) {
+            case IRExpression.Aggregate aggregate ->
+                collector.reference((IRExpression.Aggregate) qualifyAggregateArgument(
+                    aggregate,
+                    collector.availableAttrs()
+                ));
+            case IRExpression.BinaryOp(var left, var op, var right) ->
+                new IRExpression.BinaryOp(
+                    rewriteAggregateExpression(left, collector),
+                    op,
+                    rewriteAggregateExpression(right, collector)
+                );
+            case IRExpression.Cast(var inner, var targetType) ->
+                new IRExpression.Cast(rewriteAggregateExpression(inner, collector), targetType);
+            case IRExpression.FunctionCall(var name, var arguments) ->
+                new IRExpression.FunctionCall(
+                    name,
+                    arguments.stream()
+                        .map(argument -> rewriteAggregateExpression(argument, collector))
+                        .toList()
+                );
+            case IRExpression.CaseWhen(var whens, var elseExpr) -> new IRExpression.CaseWhen(
+                whens.stream()
+                    .map(when -> new IRExpression.WhenClause(
+                        rewriteAggregateCondition(when.condition(), collector),
+                        rewriteAggregateExpression(when.result(), collector)
+                    ))
+                    .toList(),
+                elseExpr.map(exprValue -> rewriteAggregateExpression(exprValue, collector))
+            );
+            case IRExpression.ColumnRef _, IRExpression.Literal _, IRExpression.ScalarSubquery _ -> expr;
+        };
+    }
+
+    private Condition rewriteAggregateCondition(Condition condition, AggregateCollector collector) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, var op) ->
+                Condition.compare(
+                    rewriteAggregateExpression(left, collector),
+                    op,
+                    rewriteAggregateExpression(right, collector)
+                );
+            case Condition.IsNull isNull -> isNull;
+            case Condition.Like(var left, var pattern, var negated) ->
+                new Condition.Like(
+                    rewriteAggregateExpression(left, collector),
+                    rewriteAggregateExpression(pattern, collector),
+                    negated
+                );
+            case Condition.Exists exists -> exists;
+            case Condition.InSubquery(var left, var subquery, var negated) ->
+                new Condition.InSubquery(
+                    rewriteAggregateExpression(left, collector),
+                    subquery,
+                    negated
+                );
+            case Condition.And(var operands) ->
+                Condition.and(operands.stream()
+                    .map(operand -> rewriteAggregateCondition(operand, collector))
+                    .toList());
+            case Condition.Or(var operands) ->
+                Condition.or(operands.stream()
+                    .map(operand -> rewriteAggregateCondition(operand, collector))
+                    .toList());
+            case Condition.Not(var operand) ->
+                Condition.not(rewriteAggregateCondition(operand, collector));
+        };
+    }
+
+    private Condition qualifyGroupedCondition(Condition condition, List<String> availableAttrs) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, var op) ->
+                Condition.compare(
+                    qualifyGroupedExpression(left, availableAttrs),
+                    op,
+                    qualifyGroupedExpression(right, availableAttrs)
+                );
+            case Condition.IsNull(var attr, var negated) ->
+                new Condition.IsNull(AttributeResolver.resolve(attr, availableAttrs), negated);
+            case Condition.Like(var left, var pattern, var negated) ->
+                new Condition.Like(
+                    qualifyGroupedExpression(left, availableAttrs),
+                    qualifyGroupedExpression(pattern, availableAttrs),
+                    negated
+                );
+            case Condition.Exists exists -> exists;
+            case Condition.InSubquery(var left, var subquery, var negated) ->
+                new Condition.InSubquery(
+                    qualifyGroupedExpression(left, availableAttrs),
+                    subquery,
+                    negated
+                );
+            case Condition.And(var operands) ->
+                Condition.and(operands.stream()
+                    .map(operand -> qualifyGroupedCondition(operand, availableAttrs))
+                    .toList());
+            case Condition.Or(var operands) ->
+                Condition.or(operands.stream()
+                    .map(operand -> qualifyGroupedCondition(operand, availableAttrs))
+                    .toList());
+            case Condition.Not(var operand) ->
+                Condition.not(qualifyGroupedCondition(operand, availableAttrs));
+        };
+    }
+
+    private IRExpression qualifyGroupedExpression(IRExpression expr, List<String> availableAttrs) {
+        return switch (expr) {
+            case IRExpression.ColumnRef(var columnName) ->
+                new IRExpression.ColumnRef(AttributeResolver.resolve(columnName, availableAttrs));
+            case IRExpression.BinaryOp(var left, var op, var right) ->
+                new IRExpression.BinaryOp(
+                    qualifyGroupedExpression(left, availableAttrs),
+                    op,
+                    qualifyGroupedExpression(right, availableAttrs)
+                );
+            case IRExpression.Cast(var inner, var targetType) ->
+                new IRExpression.Cast(qualifyGroupedExpression(inner, availableAttrs), targetType);
+            case IRExpression.FunctionCall(var name, var arguments) ->
+                new IRExpression.FunctionCall(
+                    name,
+                    arguments.stream()
+                        .map(argument -> qualifyGroupedExpression(argument, availableAttrs))
+                        .toList()
+                );
+            case IRExpression.CaseWhen(var whens, var elseExpr) -> new IRExpression.CaseWhen(
+                whens.stream()
+                    .map(when -> new IRExpression.WhenClause(
+                        qualifyGroupedCondition(when.condition(), availableAttrs),
+                        qualifyGroupedExpression(when.result(), availableAttrs)
+                    ))
+                    .toList(),
+                elseExpr.map(exprValue -> qualifyGroupedExpression(exprValue, availableAttrs))
+            );
+            case IRExpression.Literal _, IRExpression.Aggregate _, IRExpression.ScalarSubquery _ -> expr;
+        };
+    }
+
+    private record GroupedQueryPreparation(
+        List<String> groupingAttributes,
+        List<IRExpression.Aggregate> aggregates,
+        List<String> outputAttributes,
+        Option<Condition> havingCondition,
+        List<AttributeRef> selectedAttributes,
+        boolean selectStar
+    ) {
+    }
+
+    private static final class AggregateCollector {
+        private final List<IRExpression.Aggregate> aggregates = new ArrayList<>();
+        private final List<String> availableAttrs;
+        private int hiddenAggregateCounter = 0;
+
+        private AggregateCollector(List<String> availableAttrs) {
+            this.availableAttrs = availableAttrs;
+        }
+
+        private IRExpression.ColumnRef reference(IRExpression.Aggregate aggregate) {
+            var alias = nextHiddenAlias();
+            add(new IRExpression.Aggregate(
+                aggregate.function(),
+                aggregate.argument(),
+                alias,
+                aggregate.distinct()
+            ));
+            return new IRExpression.ColumnRef(alias);
+        }
+
+        private void add(IRExpression.Aggregate aggregate) {
+            if (availableAttrs.contains(aggregate.alias())
+                || aggregates.stream().anyMatch(existing -> existing.alias().equals(aggregate.alias()))) {
+                throw new IllegalArgumentException(
+                    "Aggregate alias '%s' conflicts with existing attributes".formatted(aggregate.alias())
+                );
+            }
+            aggregates.add(aggregate);
+        }
+
+        private String nextHiddenAlias() {
+            hiddenAggregateCounter += 1;
+            return "agg_expr_" + hiddenAggregateCounter;
+        }
+
+        private List<IRExpression.Aggregate> aggregates() {
+            return List.copyOf(aggregates);
+        }
+
+        private List<String> availableAttrs() {
+            return availableAttrs;
+        }
     }
 }
