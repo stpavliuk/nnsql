@@ -26,7 +26,17 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
         String relationName,
         RenderContext ctx
     ) {
-        if (!(condition instanceof Condition.And(var operands)) || operands.size() < 4) {
+        var fullyInline = inlineCondition(condition, relationName);
+        if (fullyInline.isPresent()) {
+            return java.util.Optional.of(buildInlineFilterIdSelect(
+                relationName,
+                List.of(fullyInline.get()),
+                List.of(),
+                List.of()
+            ));
+        }
+
+        if (!(condition instanceof Condition.And(var operands))) {
             return java.util.Optional.empty();
         }
 
@@ -47,10 +57,24 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             fallbackConditions.add(paren(render(operand, relationName, false, ctx)));
         }
 
-        if (inlinePredicates.size() < 3 && inlinedCorrelatedComparisons.isEmpty()) {
+        if (inlinePredicates.isEmpty() && inlinedCorrelatedComparisons.isEmpty()) {
             return java.util.Optional.empty();
         }
 
+        return java.util.Optional.of(buildInlineFilterIdSelect(
+            relationName,
+            inlinePredicates,
+            inlinedCorrelatedComparisons,
+            fallbackConditions
+        ));
+    }
+
+    private PlainSelect buildInlineFilterIdSelect(
+        String relationName,
+        List<InlinePredicate> inlinePredicates,
+        List<ComparisonRenderer.InlinedCorrelatedComparison> inlinedCorrelatedComparisons,
+        List<Expression> fallbackConditions
+    ) {
         var requiredColumns = new ArrayList<String>();
         requiredColumns.addAll(inlinePredicates.stream()
             .flatMap(inline -> inline.requiredColumns().stream())
@@ -95,7 +119,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
                 : andAll(whereConditions)
         );
 
-        return java.util.Optional.of(ps);
+        return ps;
     }
 
     Expression renderTrue(Condition condition, String relationName, RenderContext ctx) {
@@ -226,8 +250,9 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
         String relationName,
         RenderContext ctx
     ) {
-        if (operands.size() < 4) {
-            return renderLogical(operands, false, relationName, ctx, true);
+        var fullyInline = inlineCondition(Condition.and(operands), relationName);
+        if (fullyInline.isPresent()) {
+            return renderInlinePredicateExists(List.of(fullyInline.get()), relationName);
         }
 
         var inlinePredicates = new ArrayList<InlinePredicate>();
@@ -306,15 +331,53 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
                 comparison.right(),
                 relationName
             );
-            case Condition.Like like when !like.isNegated() -> inlineComparison(
+            case Condition.Like like -> inlineComparison(
                 like,
                 like.left(),
-                "LIKE",
+                like.isNegated() ? "NOT LIKE" : "LIKE",
                 like.pattern(),
                 relationName
             );
+            case Condition.And(var operands) -> inlineLogicalCondition(operands, relationName);
+            case Condition.Not(var operand) -> inlineCondition(operand, relationName)
+                .map(inline -> new InlinePredicate(
+                    condition,
+                    not(paren(inline.predicate())),
+                    inline.requiredColumns()
+                ));
             default -> java.util.Optional.empty();
         };
+    }
+
+    private java.util.Optional<InlinePredicate> inlineLogicalCondition(
+        List<Condition> operands,
+        String relationName
+    ) {
+        var inlinedOperands = operands.stream()
+            .map(operand -> inlineCondition(operand, relationName))
+            .toList();
+        if (inlinedOperands.stream().anyMatch(java.util.Optional::isEmpty)) {
+            return java.util.Optional.empty();
+        }
+
+        var predicates = inlinedOperands.stream()
+            .map(java.util.Optional::orElseThrow)
+            .toList();
+
+        var requiredColumns = predicates.stream()
+            .flatMap(inline -> inline.requiredColumns().stream())
+            .distinct()
+            .toList();
+        var predicateExpressions = predicates.stream()
+            .map(InlinePredicate::predicate)
+            .toList();
+        var combinedPredicate = switch (predicateExpressions.size()) {
+            case 0 -> new net.sf.jsqlparser.expression.BooleanValue(true);
+            case 1 -> predicateExpressions.getFirst();
+            default -> andAll(predicateExpressions);
+        };
+
+        return java.util.Optional.of(new InlinePredicate(Condition.and(operands), combinedPredicate, requiredColumns));
     }
 
     private java.util.Optional<InlinePredicate> inlineComparison(
