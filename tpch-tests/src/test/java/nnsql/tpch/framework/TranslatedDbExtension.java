@@ -18,7 +18,7 @@ import java.util.Comparator;
 
 public class TranslatedDbExtension implements BeforeAllCallback, AfterAllCallback, ParameterResolver {
 
-    static final String DEFAULT_SCALE_FACTOR = "0.001";
+    static final String DEFAULT_SCALE_FACTOR = "0.5";
     static final double DEFAULT_NULL_RATE = 0.7d;
 
     private static final String DB_DIR_PROPERTY = "nnsql.tpch.dbDir";

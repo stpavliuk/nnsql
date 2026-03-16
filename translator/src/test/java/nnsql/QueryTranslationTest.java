@@ -174,20 +174,29 @@ class QueryTranslationTest {
                     FROM all_ids_product_0, S_C
                     WHERE all_ids_product_0.id2 = S_C.id
                 ),
-                group_1_id AS (
-                    SELECT product_0_id.id
+                grouped_group_1 AS (
+                    SELECT MIN(product_0_id.id) AS id,
+                           CASE WHEN product_0_R_A.id IS NULL THEN 0 ELSE 1 END AS group_key_0_present,
+                           product_0_R_A.v AS group_key_0_value,
+                           SUM(product_0_S_C.v) AS total
                     FROM product_0_id
-                    WHERE NOT EXISTS (SELECT * FROM product_0_id R1 WHERE R1.id < product_0_id.id AND (EXISTS (SELECT * FROM product_0_R_A a1, product_0_R_A a2 WHERE a1.id = product_0_id.id AND a2.id = R1.id AND a1.v = a2.v) OR NOT EXISTS (SELECT * FROM product_0_R_A WHERE product_0_R_A.id = product_0_id.id OR product_0_R_A.id = R1.id)))
+                    LEFT JOIN product_0_R_A ON product_0_R_A.id = product_0_id.id
+                    LEFT JOIN product_0_S_C ON product_0_S_C.id = product_0_id.id
+                    GROUP BY CASE WHEN product_0_R_A.id IS NULL THEN 0 ELSE 1 END, product_0_R_A.v
+                ),
+                group_1_id AS (
+                    SELECT grouped_group_1.id
+                    FROM grouped_group_1
                 ),
                 group_1_R_A AS (
-                    SELECT product_0_R_A.*
-                    FROM product_0_R_A JOIN group_1_id ON group_1_id.id = product_0_R_A.id
+                    SELECT grouped_group_1.id, grouped_group_1.group_key_0_value AS v
+                    FROM grouped_group_1
+                    WHERE grouped_group_1.group_key_0_present = 1
                 ),
                 group_1_total AS (
-                    SELECT group_1_id.id, SUM(product_0_S_C.v) AS v
-                    FROM group_1_id, product_0_id input_id, product_0_S_C
-                    WHERE product_0_S_C.id = input_id.id AND (EXISTS (SELECT * FROM product_0_R_A g1, product_0_R_A g2 WHERE g1.id = input_id.id AND g2.id = group_1_id.id AND g1.v = g2.v) OR NOT EXISTS (SELECT * FROM product_0_R_A WHERE product_0_R_A.id = input_id.id OR product_0_R_A.id = group_1_id.id))
-                    GROUP BY group_1_id.id
+                    SELECT grouped_group_1.id, grouped_group_1.total AS v
+                    FROM grouped_group_1
+                    WHERE grouped_group_1.total IS NOT NULL
                 ),
                 return_2_id AS (
                 SELECT id FROM group_1_id
@@ -458,6 +467,18 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testJoinPushdownInsideCorrelatedScalarSubquery() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.A = (SELECT MIN(S.C) FROM S, T WHERE S.B = T.D AND T.E = R.B)"
+        ));
+
+        assertTrue(sql.contains("corr_subquery.subquery_value"));
+        assertTrue(sql.contains("corr_subquery.T_E"));
+        assertTrue(sql.contains("JOIN S_B AS _jp0l ON") || sql.contains("JOIN T_D AS _jp0l ON"));
+        assertTrue(sql.contains("_jp0l.v = _jp0r.v"));
+    }
+
+    @Test
     void testCorrelatedExists() {
         var sql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE EXISTS (SELECT * FROM S WHERE S.B = R.B AND S.C > 10)"
@@ -603,15 +624,16 @@ class QueryTranslationTest {
                     SELECT product_2_customer_c_acctbal.*
                     FROM product_2_customer_c_acctbal JOIN filter_3_id ON filter_3_id.id = product_2_customer_c_acctbal.id
                 ),
-                group_4_id AS (
-                    SELECT MIN(id) AS id
+                grouped_group_4 AS (
+                    SELECT MIN(filter_3_id.id) AS id,
+                           AVG(filter_3_customer_c_acctbal.v) AS avg_accball
                     FROM filter_3_id
+                    LEFT JOIN filter_3_customer_c_acctbal ON filter_3_customer_c_acctbal.id = filter_3_id.id
                 ),
                 group_4_avg_accball AS (
-                    SELECT group_4_id.id, AVG(filter_3_customer_c_acctbal.v) AS v
-                    FROM group_4_id, filter_3_id input_id, filter_3_customer_c_acctbal
-                    WHERE filter_3_customer_c_acctbal.id = input_id.id
-                    GROUP BY group_4_id.id
+                    SELECT grouped_group_4.id, grouped_group_4.avg_accball AS v
+                    FROM grouped_group_4
+                    WHERE grouped_group_4.avg_accball IS NOT NULL
                 ),
                 return_5_attr_avg_accball AS (
                     SELECT id, v FROM group_4_avg_accball
@@ -629,24 +651,28 @@ class QueryTranslationTest {
                     SELECT product_0_customer_c_mktsegment.*
                     FROM product_0_customer_c_mktsegment JOIN filter_1_id ON filter_1_id.id = product_0_customer_c_mktsegment.id
                 ),
+                grouped_group_6 AS (
+                    SELECT MIN(filter_1_id.id) AS id,
+                           CASE WHEN filter_1_customer_c_mktsegment.id IS NULL THEN 0 ELSE 1 END AS group_key_0_present,
+                           filter_1_customer_c_mktsegment.v AS group_key_0_value,
+                           COUNT(filter_1_customer_c_custkey.v) AS seg
+                    FROM filter_1_id
+                    LEFT JOIN filter_1_customer_c_mktsegment ON filter_1_customer_c_mktsegment.id = filter_1_id.id
+                    LEFT JOIN filter_1_customer_c_custkey ON filter_1_customer_c_custkey.id = filter_1_id.id
+                    GROUP BY CASE WHEN filter_1_customer_c_mktsegment.id IS NULL THEN 0 ELSE 1 END, filter_1_customer_c_mktsegment.v
+                ),
                 group_6_id AS (
-                SELECT filter_1_id.id
-                FROM filter_1_id
-                    WHERE NOT EXISTS (SELECT * FROM filter_1_id R1 WHERE R1.id < filter_1_id.id AND (EXISTS (SELECT * FROM filter_1_customer_c_mktsegment a1, filter_1_customer_c_mktsegment a2 WHERE a1.id = filter_1_id.id AND a2.id = R1.id AND a1.v = a2.v) OR NOT EXISTS (SELECT * FROM filter_1_customer_c_mktsegment WHERE filter_1_customer_c_mktsegment.id = filter_1_id.id OR filter_1_customer_c_mktsegment.id = R1.id)))
+                    SELECT grouped_group_6.id
+                    FROM grouped_group_6
                 ),
                 group_6_customer_c_mktsegment AS (
-                    SELECT filter_1_customer_c_mktsegment.*
-                    FROM filter_1_customer_c_mktsegment JOIN group_6_id ON group_6_id.id = filter_1_customer_c_mktsegment.id
+                    SELECT grouped_group_6.id, grouped_group_6.group_key_0_value AS v
+                    FROM grouped_group_6
+                    WHERE grouped_group_6.group_key_0_present = 1
                 ),
                 group_6_seg AS (
-                    SELECT group_6_id.id, COUNT(filter_1_customer_c_custkey.v) AS v
-                    FROM group_6_id, filter_1_id input_id, filter_1_customer_c_custkey
-                    WHERE filter_1_customer_c_custkey.id = input_id.id AND (EXISTS (SELECT * FROM filter_1_customer_c_mktsegment g1, filter_1_customer_c_mktsegment g2 WHERE g1.id = input_id.id AND g2.id = group_6_id.id AND g1.v = g2.v) OR NOT EXISTS (SELECT * FROM filter_1_customer_c_mktsegment WHERE filter_1_customer_c_mktsegment.id = input_id.id OR filter_1_customer_c_mktsegment.id = group_6_id.id))
-                    GROUP BY group_6_id.id
-                    UNION
-                    SELECT group_6_id.id, 0 AS v
-                    FROM group_6_id
-                    WHERE NOT EXISTS (SELECT * FROM filter_1_id input_id, filter_1_customer_c_custkey WHERE filter_1_customer_c_custkey.id = input_id.id AND (EXISTS (SELECT * FROM filter_1_customer_c_mktsegment g1, filter_1_customer_c_mktsegment g2 WHERE g1.id = input_id.id AND g2.id = group_6_id.id AND g1.v = g2.v) OR NOT EXISTS (SELECT * FROM filter_1_customer_c_mktsegment WHERE filter_1_customer_c_mktsegment.id = input_id.id OR filter_1_customer_c_mktsegment.id = group_6_id.id)))
+                    SELECT grouped_group_6.id, grouped_group_6.seg AS v
+                    FROM grouped_group_6
                 ),
                 aggfilter_7_id AS (
                     SELECT group_6_id.id
@@ -911,13 +937,13 @@ class QueryTranslationTest {
         ));
         assertTrue(sumSql.contains("group_1_sum_b"));
         assertTrue(sumSql.contains("SUM(CASE WHEN product_0_R_A.v > 10.0 THEN product_0_R_B.v END)"));
-        assertTrue(sumSql.contains("CASE WHEN product_0_R_A.v > 10.0 THEN product_0_R_B.v END IS NOT NULL"));
+        assertFalse(sumSql.contains("CASE WHEN product_0_R_A.v > 10.0 THEN product_0_R_B.v END IS NOT NULL"));
 
         var groupedSumSql = normalizeWhitespace(translator.translate(
             "SELECT R.A, SUM(CASE WHEN R.B > 0 THEN R.B END) AS sum_b FROM R GROUP BY R.A"
         ));
         assertTrue(groupedSumSql.contains("group_1_sum_b"));
-        assertTrue(groupedSumSql.contains("CASE WHEN product_0_R_B.v > 0.0 THEN product_0_R_B.v END IS NOT NULL"));
+        assertFalse(groupedSumSql.contains("CASE WHEN product_0_R_B.v > 0.0 THEN product_0_R_B.v END IS NOT NULL"));
 
         var countSql = normalizeWhitespace(translator.translate(
             "SELECT COUNT(CASE WHEN R.A > 10 THEN R.B END) AS cnt FROM R"
@@ -1031,10 +1057,10 @@ class QueryTranslationTest {
         ));
 
         assertTrue(sql.contains(
-            "(EXISTS (SELECT * FROM product_0_R_A a1, product_0_R_A a2 WHERE a1.id = product_0_id.id AND a2.id = R1.id AND a1.v = a2.v) OR NOT EXISTS (SELECT * FROM product_0_R_A WHERE product_0_R_A.id = product_0_id.id OR product_0_R_A.id = R1.id))"
+            "CASE WHEN product_0_R_A.id IS NULL THEN 0 ELSE 1 END AS group_key_0_present"
         ));
         assertTrue(sql.contains(
-            "(EXISTS (SELECT * FROM product_0_R_A g1, product_0_R_A g2 WHERE g1.id = input_id.id AND g2.id = group_1_id.id AND g1.v = g2.v) OR NOT EXISTS (SELECT * FROM product_0_R_A WHERE product_0_R_A.id = input_id.id OR product_0_R_A.id = group_1_id.id))"
+            "GROUP BY CASE WHEN product_0_R_A.id IS NULL THEN 0 ELSE 1 END, product_0_R_A.v"
         ));
     }
 

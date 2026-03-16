@@ -16,6 +16,7 @@ from pathlib import Path
 @dataclass(frozen=True)
 class TableSpec:
     columns: list[tuple[str, str]]
+    primary_key: list[str]
 
 
 TABLE_SPECS: dict[str, TableSpec] = {
@@ -29,7 +30,8 @@ TABLE_SPECS: dict[str, TableSpec] = {
             ("c_acctbal", "DECIMAL(15,2)"),
             ("c_mktsegment", "VARCHAR"),
             ("c_comment", "VARCHAR"),
-        ]
+        ],
+        primary_key=["c_custkey"],
     ),
     "lineitem": TableSpec(
         columns=[
@@ -49,7 +51,8 @@ TABLE_SPECS: dict[str, TableSpec] = {
             ("l_shipinstruct", "VARCHAR"),
             ("l_shipmode", "VARCHAR"),
             ("l_comment", "VARCHAR"),
-        ]
+        ],
+        primary_key=["l_orderkey", "l_linenumber"],
     ),
     "nation": TableSpec(
         columns=[
@@ -57,7 +60,8 @@ TABLE_SPECS: dict[str, TableSpec] = {
             ("n_name", "VARCHAR"),
             ("n_regionkey", "INTEGER"),
             ("n_comment", "VARCHAR"),
-        ]
+        ],
+        primary_key=["n_nationkey"],
     ),
     "orders": TableSpec(
         columns=[
@@ -70,7 +74,8 @@ TABLE_SPECS: dict[str, TableSpec] = {
             ("o_clerk", "VARCHAR"),
             ("o_shippriority", "INTEGER"),
             ("o_comment", "VARCHAR"),
-        ]
+        ],
+        primary_key=["o_orderkey"],
     ),
     "part": TableSpec(
         columns=[
@@ -83,7 +88,8 @@ TABLE_SPECS: dict[str, TableSpec] = {
             ("p_container", "VARCHAR"),
             ("p_retailprice", "DECIMAL(15,2)"),
             ("p_comment", "VARCHAR"),
-        ]
+        ],
+        primary_key=["p_partkey"],
     ),
     "partsupp": TableSpec(
         columns=[
@@ -92,14 +98,16 @@ TABLE_SPECS: dict[str, TableSpec] = {
             ("ps_availqty", "BIGINT"),
             ("ps_supplycost", "DECIMAL(15,2)"),
             ("ps_comment", "VARCHAR"),
-        ]
+        ],
+        primary_key=["ps_partkey", "ps_suppkey"],
     ),
     "region": TableSpec(
         columns=[
             ("r_regionkey", "INTEGER"),
             ("r_name", "VARCHAR"),
             ("r_comment", "VARCHAR"),
-        ]
+        ],
+        primary_key=["r_regionkey"],
     ),
     "supplier": TableSpec(
         columns=[
@@ -110,7 +118,8 @@ TABLE_SPECS: dict[str, TableSpec] = {
             ("s_phone", "VARCHAR"),
             ("s_acctbal", "DECIMAL(15,2)"),
             ("s_comment", "VARCHAR"),
-        ]
+        ],
+        primary_key=["s_suppkey"],
     ),
 }
 
@@ -121,8 +130,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--scale-factor",
-        default="0.001",
-        help="TPCH scale factor folder to generate. Default: 0.001",
+        default="0.5",
+        help="TPCH scale factor folder to generate. Default: 0.5",
     )
     parser.add_argument(
         "--output-root",
@@ -243,7 +252,7 @@ def write_manifest(output_path: Path, scale_factor: str, row_counts: dict[str, i
         headers = ",".join(name for name, _ in spec.columns)
         lines.append(f"table.{table_name}.columns={headers}")
         lines.append(f"table.{table_name}.rowCount={row_counts[table_name]}")
-        lines.append(f"table.{table_name}.pk=")
+        lines.append(f"table.{table_name}.pk={','.join(spec.primary_key)}")
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

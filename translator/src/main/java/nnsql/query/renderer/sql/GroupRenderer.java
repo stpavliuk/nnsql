@@ -9,7 +9,7 @@ import nnsql.query.ir.IRExpression;
 import nnsql.query.ir.Group;
 import nnsql.query.renderer.RenderContext;
 
-import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 
 import static nnsql.query.renderer.sql.Sql.*;
@@ -17,234 +17,132 @@ import static nnsql.query.renderer.sql.Sql.*;
 class GroupRenderer {
 
     void render(Group group, RenderContext ctx, String baseName, String inputBaseName) {
-        addIdCTE(ctx, baseName, inputBaseName, group);
-        addPassthroughAttributeCTEs(ctx, baseName, inputBaseName, group.groupingAttributes(), Sql::attrTable);
-        addAggregateCTEs(ctx, baseName, inputBaseName, group);
+        var groupedDataName = "grouped_" + baseName;
+        addGroupedDataCTE(ctx, groupedDataName, inputBaseName, group);
+        addIdCTE(ctx, baseName, groupedDataName);
+        addGroupingAttributeCTEs(ctx, baseName, groupedDataName, group.groupingAttributes());
+        addAggregateCTEs(ctx, baseName, groupedDataName, group.aggregates());
     }
 
-    private void addIdCTE(RenderContext ctx, String baseName, String inputBaseName, Group group) {
-        var groupingAttrs = group.groupingAttributes();
+    private void addGroupedDataCTE(
+        RenderContext ctx,
+        String groupedDataName,
+        String inputBaseName,
+        Group group
+    ) {
+        var inputIdTbl = table(idTable(inputBaseName));
+        var ps = new PlainSelect();
+        ps.setFromItem(inputIdTbl);
+        ps.addSelectItem(fn("MIN", column(inputIdTbl, "id")), new Alias("id", true));
 
-        if (groupingAttrs.isEmpty()) {
-            var ps = new PlainSelect();
-            ps.addSelectItem(fn("MIN", column("id")), new Alias("id", true));
-            ps.setFromItem(table(idTable(inputBaseName)));
+        var requiredColumns = new LinkedHashSet<>(group.groupingAttributes());
+        group.aggregates().stream()
+            .map(IRExpression.Aggregate::argument)
+            .map(ExpressionSqlRenderer::collectColumns)
+            .forEach(requiredColumns::addAll);
 
-            ctx.addCTE(idTable(baseName), ps.toString());
-        } else {
-            var inputIdTbl = table(idTable(inputBaseName));
-            var r1Tbl = tableAlias(idTable(inputBaseName), "R1");
+        requiredColumns.forEach(columnName -> {
+            var attrTbl = table(attrTable(inputBaseName, columnName));
+            ps.addJoins(leftJoin(attrTbl,
+                new EqualsTo(column(attrTbl, "id"), column(inputIdTbl, "id"))));
+        });
 
-            var equalityConditions = groupingAttrs.stream()
-                .map(attr -> equalityExists(inputBaseName, attr, "a1", "a2",
-                    column(inputIdTbl, "id"), column("R1", "id")))
-                .toList();
+        var groupingProjections = java.util.stream.IntStream.range(0, group.groupingAttributes().size())
+            .mapToObj(index -> groupingProjection(group.groupingAttributes().get(index), inputBaseName, index))
+            .toList();
 
-            var subquery = new PlainSelect();
-            subquery.addSelectItem(new AllColumns());
-            subquery.setFromItem(r1Tbl);
-            subquery.setWhere(and(
-                new net.sf.jsqlparser.expression.operators.relational.MinorThan(
-                    column("R1", "id"), column(inputIdTbl, "id")),
-                andAll(equalityConditions)));
-
-            var ps = new PlainSelect();
-            ps.addSelectItem(column(inputIdTbl, "id"));
-            ps.setFromItem(inputIdTbl);
-            ps.setWhere(notExists(subquery));
-
-            ctx.addCTE(idTable(baseName), ps.toString());
+        for (var projection : groupingProjections) {
+            ps.addSelectItem(projection.presentExpr(), new Alias(projection.presentAlias(), true));
+            ps.addSelectItem(projection.valueExpr(), new Alias(projection.valueAlias(), true));
+            ps.addGroupByColumnReference(projection.presentExpr());
+            ps.addGroupByColumnReference(projection.valueExpr());
         }
-    }
-
-    private Expression equalityExists(String inputBaseName, String attr,
-                                       String alias1, String alias2,
-                                       Expression outerId, Expression innerId) {
-        var attrTableName = attrTable(inputBaseName, attr);
-        var t1 = tableAlias(attrTableName, alias1);
-        var t2 = tableAlias(attrTableName, alias2);
-
-        var existsSelect = new PlainSelect();
-        existsSelect.addSelectItem(new AllColumns());
-        existsSelect.setFromItem(t1);
-        existsSelect.addJoins(simpleJoin(t2));
-        existsSelect.setWhere(andAll(List.of(
-            new EqualsTo(column(alias1, "id"), outerId),
-            new EqualsTo(column(alias2, "id"), innerId),
-            new EqualsTo(column(alias1, "v"), column(alias2, "v"))
-        )));
-
-        var notExistsSelect = new PlainSelect();
-        notExistsSelect.addSelectItem(new AllColumns());
-        notExistsSelect.setFromItem(table(attrTableName));
-        notExistsSelect.setWhere(or(
-            new EqualsTo(column(attrTableName, "id"), outerId),
-            new EqualsTo(column(attrTableName, "id"), innerId)
-        ));
-
-        return paren(or(exists(existsSelect), notExists(notExistsSelect)));
-    }
-
-    private void addAggregateCTEs(RenderContext ctx, String baseName, String inputBaseName, Group group) {
-        var groupingAttrs = group.groupingAttributes();
 
         for (var aggregate : group.aggregates()) {
-            var functionName = aggregate.function();
-            var argument = aggregate.argument();
-            var alias = aggregate.alias();
-            var distinct = aggregate.distinct();
+            var argumentExpr = ExpressionSqlRenderer.toSqlExpr(aggregate.argument(), inputBaseName);
+            var aggregateFunction = fn(aggregate.function(), argumentExpr);
+            aggregateFunction.setDistinct(aggregate.distinct());
+            ps.addSelectItem(aggregateFunction, new Alias(aggregate.alias(), true));
+        }
 
-            var columns = ExpressionSqlRenderer.collectColumns(argument);
+        ctx.addCTE(groupedDataName, ps.toString());
+    }
 
-            String definition;
-            if (functionName.equals("COUNT")) {
-                definition = renderCountAggregate(
-                    baseName,
-                    inputBaseName,
-                    argument,
-                    columns,
-                    groupingAttrs,
-                    distinct
-                );
-            } else {
-                definition = buildAggregateSelect(
-                    baseName,
-                    inputBaseName,
-                    argument,
-                    columns,
-                    functionName,
-                    groupingAttrs,
-                    distinct
-                )
-                    .toString();
+    private void addIdCTE(RenderContext ctx, String baseName, String groupedDataName) {
+        var groupedDataTbl = table(groupedDataName);
+        var ps = new PlainSelect();
+        ps.addSelectItem(column(groupedDataTbl, "id"));
+        ps.setFromItem(groupedDataTbl);
+        ctx.addCTE(idTable(baseName), ps.toString());
+    }
+
+    private void addGroupingAttributeCTEs(
+        RenderContext ctx,
+        String baseName,
+        String groupedDataName,
+        List<String> groupingAttributes
+    ) {
+        java.util.stream.IntStream.range(0, groupingAttributes.size())
+            .forEach(index -> {
+                var projection = groupingProjection(groupingAttributes.get(index), groupedDataName, index);
+                var groupedDataTbl = table(groupedDataName);
+                var ps = new PlainSelect();
+                ps.addSelectItem(column(groupedDataTbl, "id"));
+                ps.addSelectItem(column(groupedDataTbl, projection.valueAlias()), new Alias("v", true));
+                ps.setFromItem(groupedDataTbl);
+                ps.setWhere(new EqualsTo(
+                    column(groupedDataTbl, projection.presentAlias()),
+                    new LongValue(1)
+                ));
+                ctx.addCTE(attrTable(baseName, groupingAttributes.get(index)), ps.toString());
+            });
+    }
+
+    private void addAggregateCTEs(
+        RenderContext ctx,
+        String baseName,
+        String groupedDataName,
+        List<IRExpression.Aggregate> aggregates
+    ) {
+        aggregates.forEach(aggregate -> {
+            var groupedDataTbl = table(groupedDataName);
+            var ps = new PlainSelect();
+            ps.addSelectItem(column(groupedDataTbl, "id"));
+            ps.addSelectItem(column(groupedDataTbl, aggregate.alias()), new Alias("v", true));
+            ps.setFromItem(groupedDataTbl);
+
+            if (!"COUNT".equals(aggregate.function())) {
+                var isNotNull = new IsNullExpression();
+                isNotNull.setLeftExpression(column(groupedDataTbl, aggregate.alias()));
+                isNotNull.setNot(true);
+                ps.setWhere(isNotNull);
             }
 
-            ctx.addCTE(attrTable(baseName, alias), definition);
-        }
+            ctx.addCTE(attrTable(baseName, aggregate.alias()), ps.toString());
+        });
     }
 
-    private PlainSelect buildAggregateSelect(String baseName, String inputBaseName, IRExpression argument,
-                                              List<String> columns, String functionName,
-                                              List<String> groupingAttrs, boolean distinct) {
-        boolean hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(argument);
-
-        var baseIdTbl = table(idTable(baseName));
-        var inputIdTbl = tableAlias(idTable(inputBaseName), "input_id");
-
-        var ps = new PlainSelect();
-        ps.addSelectItem(column(baseIdTbl, "id"));
-        var argumentExpr = ExpressionSqlRenderer.toSqlExpr(argument, inputBaseName);
-        var aggregateFunction = fn(functionName, argumentExpr);
-        aggregateFunction.setDistinct(distinct);
-        ps.addSelectItem(
-            aggregateFunction,
-            new Alias("v", true)
+    private GroupingProjection groupingProjection(String attribute, String relationName, int index) {
+        var attrTbl = table(attrTable(relationName, attribute));
+        var presentExpr = new CaseExpression()
+            .withWhenClauses(List.of(new WhenClause(
+                new IsNullExpression().withLeftExpression(column(attrTbl, "id")),
+                new LongValue(0)
+            )))
+            .withElseExpression(new LongValue(1));
+        return new GroupingProjection(
+            "group_key_%d_present".formatted(index),
+            "group_key_%d_value".formatted(index),
+            presentExpr,
+            column(attrTbl, "v")
         );
-        ps.setFromItem(baseIdTbl);
-
-        var joins = new ArrayList<Join>();
-        joins.add(simpleJoin(inputIdTbl));
-
-        var conditions = new ArrayList<Expression>();
-        addComputedExprAttributeJoins(
-            inputBaseName,
-            columns,
-            column("input_id", "id"),
-            hasCaseWhen,
-            Sql.NonCaseJoinMode.SIMPLE_JOIN_WITH_WHERE_ID,
-            joins,
-            conditions
-        );
-        ps.setJoins(joins);
-
-        Expression where = conditions.isEmpty()
-            ? new BooleanValue(true)
-            : andAll(conditions);
-
-        if (!groupingAttrs.isEmpty()) {
-            var equalityConditions = groupingAttrs.stream()
-                .map(attr -> equalityExists(inputBaseName, attr, "g1", "g2",
-                    column("input_id", "id"), column(idTable(baseName), "id")))
-                .toList();
-            where = and(where, andAll(equalityConditions));
-        }
-
-        if (hasCaseWhen && !"COUNT".equals(functionName)) {
-            var isNotNull = new IsNullExpression();
-            isNotNull.setLeftExpression(argumentExpr);
-            isNotNull.setNot(true);
-            where = and(where, isNotNull);
-        }
-        ps.setWhere(where);
-
-        ps.addGroupByColumnReference(column(baseIdTbl, "id"));
-
-        return ps;
     }
 
-    private String renderCountAggregate(String baseName, String inputBaseName, IRExpression argument,
-                                         List<String> columns, List<String> groupingAttrs,
-                                         boolean distinct) {
-        boolean hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(argument);
-
-        var countSelect = buildAggregateSelect(
-            baseName,
-            inputBaseName,
-            argument,
-            columns,
-            "COUNT",
-            groupingAttrs,
-            distinct
-        );
-
-        var baseIdTbl = table(idTable(baseName));
-        var inputIdTbl = tableAlias(idTable(inputBaseName), "input_id");
-
-        var joins = new ArrayList<Join>();
-        var conditions = new ArrayList<Expression>();
-
-        addComputedExprAttributeJoins(
-            inputBaseName,
-            columns,
-            column("input_id", "id"),
-            hasCaseWhen,
-            Sql.NonCaseJoinMode.SIMPLE_JOIN_WITH_WHERE_ID,
-            joins,
-            conditions
-        );
-
-        Expression subWhere = conditions.isEmpty()
-            ? new BooleanValue(true)
-            : andAll(conditions);
-
-        if (!groupingAttrs.isEmpty()) {
-            var equalityConditions = groupingAttrs.stream()
-                .map(attr -> equalityExists(inputBaseName, attr, "g1", "g2",
-                    column("input_id", "id"), column(idTable(baseName), "id")))
-                .toList();
-            subWhere = and(subWhere, andAll(equalityConditions));
-        } else if (!conditions.isEmpty()) {
-            subWhere = and(subWhere, new BooleanValue(true));
-        }
-
-        var subquery = new PlainSelect();
-        subquery.addSelectItem(new AllColumns());
-        subquery.setFromItem(inputIdTbl);
-        if (!joins.isEmpty()) {
-            subquery.setJoins(joins);
-        }
-        subquery.setWhere(subWhere);
-
-        var zeroPart = new PlainSelect();
-        zeroPart.addSelectItem(column(baseIdTbl, "id"));
-        zeroPart.addSelectItem(new LongValue(0), new Alias("v", true));
-        zeroPart.setFromItem(baseIdTbl);
-        zeroPart.setWhere(notExists(subquery));
-
-        var union = new SetOperationList();
-        union.addSelects(countSelect, zeroPart);
-        union.addOperations(new UnionOp());
-
-        return union.toString();
+    private record GroupingProjection(
+        String presentAlias,
+        String valueAlias,
+        Expression presentExpr,
+        Expression valueExpr
+    ) {
     }
 }

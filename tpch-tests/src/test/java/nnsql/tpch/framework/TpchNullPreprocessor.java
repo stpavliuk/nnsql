@@ -37,23 +37,6 @@ public final class TpchNullPreprocessor {
         return outputDir;
     }
 
-    static TableData loadTable(Path path) throws IOException {
-        try (var reader = Files.newBufferedReader(path);
-             var parser = INPUT_CSV.parse(reader)) {
-            var headers = List.copyOf(parser.getHeaderNames());
-            var rows = parser.stream()
-                .map(record -> {
-                    var row = new ArrayList<String>(headers.size());
-                    for (int i = 0; i < headers.size(); i++) {
-                        row.add(record.get(i));
-                    }
-                    return (List<String>) row;
-                })
-                .toList();
-            return new TableData(headers, rows);
-        }
-    }
-
     static List<List<String>> nullifyTable(
         String tableName,
         List<String> headers,
@@ -65,55 +48,24 @@ public final class TpchNullPreprocessor {
             return copyRows(rows);
         }
 
-        var protectedCells = new HashSet<CellRef>();
-        var candidates = new ArrayList<NullCandidate>();
-
-        for (int colIndex = 0; colIndex < headers.size(); colIndex++) {
-            var columnName = headers.get(colIndex);
-            if (primaryKeys.contains(columnName)) {
-                continue;
-            }
-
-            NullCandidate protectedCandidate = null;
-            for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
-                var value = rows.get(rowIndex).get(colIndex);
-                if (isNullOrEmpty(value)) {
-                    continue;
-                }
-                var candidate = new NullCandidate(
-                    new CellRef(rowIndex, colIndex),
-                    stableScore(tableName, columnName, rowIndex)
-                );
-                candidates.add(candidate);
-                if (protectedCandidate == null || candidate.score().compareTo(protectedCandidate.score()) > 0) {
-                    protectedCandidate = candidate;
-                }
-            }
-            if (protectedCandidate != null) {
-                protectedCells.add(protectedCandidate.cellRef());
-            }
-        }
-
-        if (candidates.isEmpty()) {
-            return copyRows(rows);
-        }
-
-        var nullifiable = candidates.stream()
-            .filter(candidate -> !protectedCells.contains(candidate.cellRef()))
-            .sorted(Comparator.comparing(NullCandidate::score))
-            .toList();
-        var targetCount = (int) Math.floor(candidates.size() * nullRate);
-        var actualCount = Math.min(targetCount, nullifiable.size());
-        var cellsToNull = new HashSet<CellRef>();
-        for (int i = 0; i < actualCount; i++) {
-            cellsToNull.add(nullifiable.get(i).cellRef());
-        }
+        var protectedRowsByColumn = protectedRowsByColumn(tableName, headers, rows, primaryKeys);
+        var nullThreshold = nullThreshold(nullRate);
 
         var mutatedRows = new ArrayList<List<String>>(rows.size());
         for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
             var row = new ArrayList<>(rows.get(rowIndex));
             for (int colIndex = 0; colIndex < row.size(); colIndex++) {
-                if (cellsToNull.contains(new CellRef(rowIndex, colIndex))) {
+                var columnName = headers.get(colIndex);
+                if (shouldNullCell(
+                    tableName,
+                    columnName,
+                    colIndex,
+                    rowIndex,
+                    row.get(colIndex),
+                    primaryKeys,
+                    protectedRowsByColumn,
+                    nullThreshold
+                )) {
                     row.set(colIndex, "");
                 }
             }
@@ -135,12 +87,36 @@ public final class TpchNullPreprocessor {
         List<String> primaryKeys,
         double nullRate
     ) throws IOException {
-        var table = loadTable(inputPath);
-        var mutated = nullifyTable(tableName, table.headers(), table.rows(), Set.copyOf(primaryKeys), nullRate);
-        try (var writer = OUTPUT_CSV.print(Files.newBufferedWriter(outputPath))) {
-            writer.printRecord(table.headers());
-            for (var row : mutated) {
-                writer.printRecord(row);
+        var primaryKeySet = Set.copyOf(primaryKeys);
+        try (var reader = Files.newBufferedReader(inputPath);
+             var parser = INPUT_CSV.parse(reader)) {
+            var headers = List.copyOf(parser.getHeaderNames());
+            var protectedRowsByColumn = scanProtectedRows(tableName, headers, parser, primaryKeySet);
+            var nullThreshold = nullThreshold(nullRate);
+
+            try (var writer = OUTPUT_CSV.print(Files.newBufferedWriter(outputPath));
+                 var secondReader = Files.newBufferedReader(inputPath);
+                 var secondParser = INPUT_CSV.parse(secondReader)) {
+                writer.printRecord(headers);
+                int rowIndex = 0;
+                for (var record : secondParser) {
+                    var row = new ArrayList<String>(headers.size());
+                    for (int colIndex = 0; colIndex < headers.size(); colIndex++) {
+                        var value = record.get(colIndex);
+                        row.add(shouldNullCell(
+                            tableName,
+                            headers.get(colIndex),
+                            colIndex,
+                            rowIndex,
+                            value,
+                            primaryKeySet,
+                            protectedRowsByColumn,
+                            nullThreshold
+                        ) ? "" : value);
+                    }
+                    writer.printRecord(row);
+                    rowIndex++;
+                }
             }
         }
     }
@@ -153,31 +129,109 @@ public final class TpchNullPreprocessor {
         return trimmed.isEmpty() || trimmed.equals("\\N");
     }
 
-    private static String stableScore(String tableName, String columnName, int rowIndex) {
+    private static Map<Integer, Integer> protectedRowsByColumn(
+        String tableName,
+        List<String> headers,
+        List<List<String>> rows,
+        Set<String> primaryKeys
+    ) {
+        var protectedRows = new HashMap<Integer, Integer>();
+        var protectedScores = new HashMap<Integer, Long>();
+
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            var row = rows.get(rowIndex);
+            for (int colIndex = 0; colIndex < headers.size(); colIndex++) {
+                var columnName = headers.get(colIndex);
+                if (primaryKeys.contains(columnName) || isNullOrEmpty(row.get(colIndex))) {
+                    continue;
+                }
+
+                var score = stableScore(tableName, columnName, rowIndex);
+                var bestScore = protectedScores.get(colIndex);
+                if (bestScore == null || Long.compareUnsigned(score, bestScore) > 0) {
+                    protectedScores.put(colIndex, score);
+                    protectedRows.put(colIndex, rowIndex);
+                }
+            }
+        }
+
+        return protectedRows;
+    }
+
+    private static Map<Integer, Integer> scanProtectedRows(
+        String tableName,
+        List<String> headers,
+        CSVParser parser,
+        Set<String> primaryKeys
+    ) throws IOException {
+        var protectedRows = new HashMap<Integer, Integer>();
+        var protectedScores = new HashMap<Integer, Long>();
+
+        int rowIndex = 0;
+        for (var record : parser) {
+            for (int colIndex = 0; colIndex < headers.size(); colIndex++) {
+                var columnName = headers.get(colIndex);
+                var value = record.get(colIndex);
+                if (primaryKeys.contains(columnName) || isNullOrEmpty(value)) {
+                    continue;
+                }
+
+                var score = stableScore(tableName, columnName, rowIndex);
+                var bestScore = protectedScores.get(colIndex);
+                if (bestScore == null || Long.compareUnsigned(score, bestScore) > 0) {
+                    protectedScores.put(colIndex, score);
+                    protectedRows.put(colIndex, rowIndex);
+                }
+            }
+            rowIndex++;
+        }
+
+        return protectedRows;
+    }
+
+    private static boolean shouldNullCell(
+        String tableName,
+        String columnName,
+        int colIndex,
+        int rowIndex,
+        String value,
+        Set<String> primaryKeys,
+        Map<Integer, Integer> protectedRowsByColumn,
+        long nullThreshold
+    ) {
+        if (primaryKeys.contains(columnName) || isNullOrEmpty(value)) {
+            return false;
+        }
+
+        var protectedRow = protectedRowsByColumn.get(colIndex);
+        if (protectedRow != null && protectedRow == rowIndex) {
+            return false;
+        }
+        return Long.compareUnsigned(stableScore(tableName, columnName, rowIndex), nullThreshold) < 0;
+    }
+
+    private static long nullThreshold(double nullRate) {
+        if (nullRate <= 0.0d) {
+            return 0L;
+        }
+        if (nullRate >= 1.0d) {
+            return (1L << 53) - 1;
+        }
+        return (long) Math.floor(nullRate * (1L << 53));
+    }
+
+    private static long stableScore(String tableName, String columnName, int rowIndex) {
         var payload = "%s|%s|%d".formatted(tableName, columnName, rowIndex);
         try {
-            return hex(MessageDigest.getInstance("SHA-256").digest(payload.getBytes(StandardCharsets.UTF_8)));
+            var digest = MessageDigest.getInstance("SHA-256").digest(payload.getBytes(StandardCharsets.UTF_8));
+            long value = 0L;
+            for (int i = 0; i < 8; i++) {
+                value = (value << 8) | (digest[i] & 0xFFL);
+            }
+            return value >>> 11;
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is unavailable", e);
         }
     }
 
-    private static String hex(byte[] bytes) {
-        var sb = new StringBuilder(bytes.length * 2);
-        for (var b : bytes) {
-            var value = b & 0xFF;
-            sb.append(Character.forDigit((value >>> 4) & 0xF, 16));
-            sb.append(Character.forDigit(value & 0xF, 16));
-        }
-        return sb.toString();
-    }
-
-    record TableData(List<String> headers, List<List<String>> rows) {
-    }
-
-    private record CellRef(int rowIndex, int columnIndex) {
-    }
-
-    private record NullCandidate(CellRef cellRef, String score) {
-    }
 }

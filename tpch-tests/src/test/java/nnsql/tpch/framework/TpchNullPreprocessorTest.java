@@ -38,4 +38,18 @@ class TpchNullPreprocessorTest {
         assertTrue(mutated.stream().anyMatch(row -> !row.get(2).isBlank()));
         assertTrue(mutated.stream().flatMap(List::stream).anyMatch(String::isBlank));
     }
+
+    @Test
+    void nonZeroNullRatePreservesPrimaryKeys() {
+        var headers = List.of("id", "value");
+        var rows = List.of(
+            List.of("1", "x1"),
+            List.of("2", "x2"),
+            List.of("3", "x3")
+        );
+
+        var mutated = TpchNullPreprocessor.nullifyTable("sample", headers, rows, Set.of("id"), 0.9d);
+
+        assertEquals(List.of("1", "2", "3"), mutated.stream().map(row -> row.getFirst()).toList());
+    }
 }

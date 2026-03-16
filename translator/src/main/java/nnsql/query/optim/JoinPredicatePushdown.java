@@ -13,14 +13,19 @@ public class JoinPredicatePushdown {
     public static IRNode optimize(IRNode node) {
         return switch (node) {
             case Product p -> optimizeProduct(p);
-            case Filter f -> optimizeFilter(f);
+            case Filter f -> optimizeFilter(new Filter(
+                optimize(f.input()),
+                optimizeCondition(f.condition()),
+                f.attributes()
+            ));
             case Group g -> new Group(
                 optimize(g.input()), g.groupingAttributes(),
-                g.aggregates(), g.outputAttributes(), g.nodeId());
+                g.aggregates().stream().map(JoinPredicatePushdown::optimizeAggregate).toList(),
+                g.outputAttributes(), g.nodeId());
             case AggFilter af -> new AggFilter(
-                optimize(af.input()), af.condition(), af.attributes());
+                optimize(af.input()), optimizeCondition(af.condition()), af.attributes());
             case Return r -> new Return(
-                optimize(r.input()), r.selectedAttributes(), r.selectStar());
+                optimize(r.input()), optimizeSelectedAttributes(r.selectedAttributes()), r.selectStar());
             case DuplElim d -> new DuplElim(optimize(d.input()), d.attributes());
             case Sort s -> new Sort(optimize(s.input()), s.keys(), s.limit());
         };
@@ -35,6 +40,78 @@ public class JoinPredicatePushdown {
             })
             .toList();
         return new Product(newRelations, p.nodeId(), p.joinPredicates());
+    }
+
+    private static List<Return.AttributeRef> optimizeSelectedAttributes(List<Return.AttributeRef> attributes) {
+        return attributes.stream()
+            .map(attr -> switch (attr) {
+                case Return.ColumnAttributeRef columnAttr -> (Return.AttributeRef) columnAttr;
+                case Return.ExpressionAttributeRef expressionAttr ->
+                    Return.AttributeRef.expr(optimizeExpression(expressionAttr.source()), expressionAttr.alias());
+            })
+            .toList();
+    }
+
+    private static IRExpression.Aggregate optimizeAggregate(IRExpression.Aggregate aggregate) {
+        return new IRExpression.Aggregate(
+            aggregate.function(),
+            optimizeExpression(aggregate.argument()),
+            aggregate.alias(),
+            aggregate.distinct()
+        );
+    }
+
+    private static Condition optimizeCondition(Condition condition) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, var operator) ->
+                Condition.compare(optimizeExpression(left), operator, optimizeExpression(right));
+            case Condition.IsNull isNull -> isNull;
+            case Condition.Like(var left, var pattern, var isNegated) ->
+                new Condition.Like(optimizeExpression(left), optimizeExpression(pattern), isNegated);
+            case Condition.Exists(var subquery, var isNegated, var correlations) ->
+                new Condition.Exists(optimize(subquery), isNegated, correlations);
+            case Condition.InSubquery(var left, var subquery, var isNegated) ->
+                new Condition.InSubquery(optimizeExpression(left), optimize(subquery), isNegated);
+            case Condition.And(var operands) ->
+                Condition.and(operands.stream().map(JoinPredicatePushdown::optimizeCondition).toList());
+            case Condition.Or(var operands) ->
+                Condition.or(operands.stream().map(JoinPredicatePushdown::optimizeCondition).toList());
+            case Condition.Not(var operand) ->
+                Condition.not(optimizeCondition(operand));
+        };
+    }
+
+    private static IRExpression optimizeExpression(IRExpression expression) {
+        return switch (expression) {
+            case IRExpression.ColumnRef columnRef -> columnRef;
+            case IRExpression.Literal literal -> literal;
+            case IRExpression.Aggregate aggregate -> optimizeAggregate(aggregate);
+            case IRExpression.BinaryOp(var left, var operator, var right) ->
+                new IRExpression.BinaryOp(optimizeExpression(left), operator, optimizeExpression(right));
+            case IRExpression.Cast(var expr, var targetType) ->
+                new IRExpression.Cast(optimizeExpression(expr), targetType);
+            case IRExpression.FunctionCall(var name, var arguments) ->
+                new IRExpression.FunctionCall(
+                    name,
+                    arguments.stream().map(JoinPredicatePushdown::optimizeExpression).toList()
+                );
+            case IRExpression.CaseWhen(var whens, var elseExpr) ->
+                new IRExpression.CaseWhen(
+                    whens.stream()
+                        .map(when -> new IRExpression.WhenClause(
+                            optimizeCondition(when.condition()),
+                            optimizeExpression(when.result())
+                        ))
+                        .toList(),
+                    elseExpr.map(JoinPredicatePushdown::optimizeExpression)
+                );
+            case IRExpression.ScalarSubquery(var subqueryPipeline, var correlations, var valueAttribute) ->
+                new IRExpression.ScalarSubquery(
+                    subqueryPipeline.stream().map(JoinPredicatePushdown::optimize).toList(),
+                    correlations,
+                    valueAttribute
+                );
+        };
     }
 
     private static IRNode optimizeFilter(Filter filter) {
