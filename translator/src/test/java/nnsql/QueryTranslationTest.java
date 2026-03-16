@@ -402,6 +402,28 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testTopLevelJoinLocalPredicatesArePushedIntoBaseRelations() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R, S WHERE R.B = S.B AND R.A > 10 AND S.C < 5"
+        ));
+
+        assertTrue(sql.contains("R__ID AS ( SELECT id FROM return_"));
+        assertTrue(sql.contains("S__ID AS ( SELECT id FROM return_"));
+        assertFalse(sql.contains("product_0_R_A.v > 10.0"));
+        assertFalse(sql.contains("product_0_S_C.v < 5.0"));
+    }
+
+    @Test
+    void testNestedSubqueriesDoNotWrapRepeatedBaseAliases() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.B = (SELECT MIN(R.B) FROM R WHERE R.A > 0)"
+        ));
+
+        assertFalse(sql.contains("R__ID AS ( SELECT id FROM return_"));
+        assertTrue(sql.contains("group_"));
+    }
+
+    @Test
     void rejectsExplicitJoinSyntax() {
         var error = assertThrows(UnsupportedOperationException.class, () -> translator.translate(
             "SELECT customer.c_custkey FROM customer LEFT JOIN S ON customer.c_custkey = S.B"

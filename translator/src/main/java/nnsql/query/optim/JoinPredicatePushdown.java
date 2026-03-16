@@ -11,23 +11,33 @@ import java.util.stream.Collectors;
 public class JoinPredicatePushdown {
 
     public static IRNode optimize(IRNode node) {
+        return optimize(node, true);
+    }
+
+    private static IRNode optimize(IRNode node, boolean allowLocalPredicatePushdown) {
         return switch (node) {
             case Product p -> optimizeProduct(p);
             case Filter f -> optimizeFilter(new Filter(
-                optimize(f.input()),
-                optimizeCondition(f.condition()),
+                optimize(f.input(), allowLocalPredicatePushdown),
+                optimizeCondition(f.condition(), allowLocalPredicatePushdown),
                 f.attributes()
-            ));
+            ), allowLocalPredicatePushdown);
             case Group g -> new Group(
-                optimize(g.input()), g.groupingAttributes(),
-                g.aggregates().stream().map(JoinPredicatePushdown::optimizeAggregate).toList(),
+                optimize(g.input(), allowLocalPredicatePushdown), g.groupingAttributes(),
+                g.aggregates().stream()
+                    .map(aggregate -> optimizeAggregate(aggregate, allowLocalPredicatePushdown))
+                    .toList(),
                 g.outputAttributes(), g.nodeId());
             case AggFilter af -> new AggFilter(
-                optimize(af.input()), optimizeCondition(af.condition()), af.attributes());
+                optimize(af.input(), allowLocalPredicatePushdown),
+                optimizeCondition(af.condition(), allowLocalPredicatePushdown),
+                af.attributes());
             case Return r -> new Return(
-                optimize(r.input()), optimizeSelectedAttributes(r.selectedAttributes()), r.selectStar());
-            case DuplElim d -> new DuplElim(optimize(d.input()), d.attributes());
-            case Sort s -> new Sort(optimize(s.input()), s.keys(), s.limit());
+                optimize(r.input(), allowLocalPredicatePushdown),
+                optimizeSelectedAttributes(r.selectedAttributes(), allowLocalPredicatePushdown),
+                r.selectStar());
+            case DuplElim d -> new DuplElim(optimize(d.input(), allowLocalPredicatePushdown), d.attributes());
+            case Sort s -> new Sort(optimize(s.input(), allowLocalPredicatePushdown), s.keys(), s.limit());
         };
     }
 
@@ -35,87 +45,121 @@ public class JoinPredicatePushdown {
         var newRelations = p.relations().stream()
             .map(r -> switch (r) {
                 case Relation.Subquery(var alias, var ir, var attrs) ->
-                    Relation.subquery(alias, optimize(ir), attrs);
+                    Relation.subquery(alias, optimize(ir, false), attrs);
                 case Relation.Table t -> (Relation) t;
             })
             .toList();
         return new Product(newRelations, p.nodeId(), p.joinPredicates());
     }
 
-    private static List<Return.AttributeRef> optimizeSelectedAttributes(List<Return.AttributeRef> attributes) {
+    private static List<Return.AttributeRef> optimizeSelectedAttributes(
+        List<Return.AttributeRef> attributes,
+        boolean allowLocalPredicatePushdown
+    ) {
         return attributes.stream()
             .map(attr -> switch (attr) {
                 case Return.ColumnAttributeRef columnAttr -> (Return.AttributeRef) columnAttr;
                 case Return.ExpressionAttributeRef expressionAttr ->
-                    Return.AttributeRef.expr(optimizeExpression(expressionAttr.source()), expressionAttr.alias());
+                    Return.AttributeRef.expr(
+                        optimizeExpression(expressionAttr.source(), allowLocalPredicatePushdown),
+                        expressionAttr.alias()
+                    );
             })
             .toList();
     }
 
-    private static IRExpression.Aggregate optimizeAggregate(IRExpression.Aggregate aggregate) {
+    private static IRExpression.Aggregate optimizeAggregate(
+        IRExpression.Aggregate aggregate,
+        boolean allowLocalPredicatePushdown
+    ) {
         return new IRExpression.Aggregate(
             aggregate.function(),
-            optimizeExpression(aggregate.argument()),
+            optimizeExpression(aggregate.argument(), allowLocalPredicatePushdown),
             aggregate.alias(),
             aggregate.distinct()
         );
     }
 
-    private static Condition optimizeCondition(Condition condition) {
+    private static Condition optimizeCondition(Condition condition, boolean allowLocalPredicatePushdown) {
         return switch (condition) {
             case Condition.Comparison(var left, var right, var operator) ->
-                Condition.compare(optimizeExpression(left), operator, optimizeExpression(right));
+                Condition.compare(
+                    optimizeExpression(left, allowLocalPredicatePushdown),
+                    operator,
+                    optimizeExpression(right, allowLocalPredicatePushdown)
+                );
             case Condition.IsNull isNull -> isNull;
             case Condition.Like(var left, var pattern, var isNegated) ->
-                new Condition.Like(optimizeExpression(left), optimizeExpression(pattern), isNegated);
+                new Condition.Like(
+                    optimizeExpression(left, allowLocalPredicatePushdown),
+                    optimizeExpression(pattern, allowLocalPredicatePushdown),
+                    isNegated
+                );
             case Condition.Exists(var subquery, var isNegated, var correlations) ->
-                new Condition.Exists(optimize(subquery), isNegated, correlations);
+                new Condition.Exists(optimize(subquery, false), isNegated, correlations);
             case Condition.InSubquery(var left, var subquery, var isNegated) ->
-                new Condition.InSubquery(optimizeExpression(left), optimize(subquery), isNegated);
+                new Condition.InSubquery(
+                    optimizeExpression(left, allowLocalPredicatePushdown),
+                    optimize(subquery, false),
+                    isNegated
+                );
             case Condition.And(var operands) ->
-                Condition.and(operands.stream().map(JoinPredicatePushdown::optimizeCondition).toList());
+                Condition.and(operands.stream()
+                    .map(operand -> optimizeCondition(operand, allowLocalPredicatePushdown))
+                    .toList());
             case Condition.Or(var operands) ->
-                Condition.or(operands.stream().map(JoinPredicatePushdown::optimizeCondition).toList());
+                Condition.or(operands.stream()
+                    .map(operand -> optimizeCondition(operand, allowLocalPredicatePushdown))
+                    .toList());
             case Condition.Not(var operand) ->
-                Condition.not(optimizeCondition(operand));
+                Condition.not(optimizeCondition(operand, allowLocalPredicatePushdown));
         };
     }
 
-    private static IRExpression optimizeExpression(IRExpression expression) {
+    private static IRExpression optimizeExpression(
+        IRExpression expression,
+        boolean allowLocalPredicatePushdown
+    ) {
         return switch (expression) {
             case IRExpression.ColumnRef columnRef -> columnRef;
             case IRExpression.Literal literal -> literal;
-            case IRExpression.Aggregate aggregate -> optimizeAggregate(aggregate);
+            case IRExpression.Aggregate aggregate -> optimizeAggregate(aggregate, allowLocalPredicatePushdown);
             case IRExpression.BinaryOp(var left, var operator, var right) ->
-                new IRExpression.BinaryOp(optimizeExpression(left), operator, optimizeExpression(right));
+                new IRExpression.BinaryOp(
+                    optimizeExpression(left, allowLocalPredicatePushdown),
+                    operator,
+                    optimizeExpression(right, allowLocalPredicatePushdown)
+                );
             case IRExpression.Cast(var expr, var targetType) ->
-                new IRExpression.Cast(optimizeExpression(expr), targetType);
+                new IRExpression.Cast(optimizeExpression(expr, allowLocalPredicatePushdown), targetType);
             case IRExpression.FunctionCall(var name, var arguments) ->
                 new IRExpression.FunctionCall(
                     name,
-                    arguments.stream().map(JoinPredicatePushdown::optimizeExpression).toList()
+                    arguments.stream()
+                        .map(argument -> optimizeExpression(argument, allowLocalPredicatePushdown))
+                        .toList()
                 );
             case IRExpression.CaseWhen(var whens, var elseExpr) ->
                 new IRExpression.CaseWhen(
                     whens.stream()
                         .map(when -> new IRExpression.WhenClause(
-                            optimizeCondition(when.condition()),
-                            optimizeExpression(when.result())
+                            optimizeCondition(when.condition(), allowLocalPredicatePushdown),
+                            optimizeExpression(when.result(), allowLocalPredicatePushdown)
                         ))
                         .toList(),
-                    elseExpr.map(JoinPredicatePushdown::optimizeExpression)
+                    elseExpr.map(expr -> optimizeExpression(expr, allowLocalPredicatePushdown))
                 );
             case IRExpression.ScalarSubquery(var subqueryPipeline, var correlations, var valueAttribute) ->
                 new IRExpression.ScalarSubquery(
-                    subqueryPipeline.stream().map(JoinPredicatePushdown::optimize).toList(),
+                    subqueryPipeline.stream().map(node -> optimize(node, false)).toList(),
                     correlations,
                     valueAttribute
                 );
         };
     }
 
-    private static IRNode optimizeFilter(Filter filter) {
-        var optimizedInput = optimize(filter.input());
+    private static IRNode optimizeFilter(Filter filter, boolean allowLocalPredicatePushdown) {
+        var optimizedInput = optimize(filter.input(), allowLocalPredicatePushdown);
 
         if (!(optimizedInput instanceof Product product) || product.relations().size() < 2) {
             return new Filter(optimizedInput, filter.condition(), filter.attributes());
@@ -124,18 +168,38 @@ public class JoinPredicatePushdown {
         var normalized = factorOutCommonJoinPredicates(filter.condition(), product);
         var extraction = extractJoinPredicates(normalized, product);
 
-        if (extraction.joinPredicates().isEmpty()) {
+        var joinOptimizedProduct = extraction.joinPredicates().isEmpty()
+            ? product
+            : new Product(product.relations(), product.nodeId(), extraction.joinPredicates());
+
+        if (!allowLocalPredicatePushdown) {
+            if (extraction.remainingCondition().isEmpty()) {
+                return joinOptimizedProduct;
+            }
+            if (joinOptimizedProduct == optimizedInput
+                && extraction.remainingCondition().get().equals(filter.condition())) {
+                return new Filter(optimizedInput, filter.condition(), filter.attributes());
+            }
+            return new Filter(joinOptimizedProduct, extraction.remainingCondition().get(), filter.attributes());
+        }
+
+        var localExtraction = extraction.remainingCondition()
+            .map(condition -> extractLocalPredicates(condition, joinOptimizedProduct))
+            .orElseGet(() -> new LocalPredicateExtraction(joinOptimizedProduct.relations(), Optional.empty()));
+
+        var finalProduct = localExtraction.relations().equals(joinOptimizedProduct.relations())
+            ? joinOptimizedProduct
+            : new Product(localExtraction.relations(), joinOptimizedProduct.nodeId(), joinOptimizedProduct.joinPredicates());
+
+        if (localExtraction.remainingCondition().isEmpty()) {
+            return finalProduct;
+        }
+
+        if (finalProduct == optimizedInput && localExtraction.remainingCondition().get().equals(filter.condition())) {
             return new Filter(optimizedInput, filter.condition(), filter.attributes());
         }
 
-        var newProduct = new Product(
-            product.relations(), product.nodeId(), extraction.joinPredicates());
-
-        if (extraction.remainingCondition().isEmpty()) {
-            return newProduct;
-        }
-
-        return new Filter(newProduct, extraction.remainingCondition().get(), filter.attributes());
+        return new Filter(finalProduct, localExtraction.remainingCondition().get(), filter.attributes());
     }
 
     /**
@@ -225,6 +289,12 @@ public class JoinPredicatePushdown {
     ) {
     }
 
+    private record LocalPredicateExtraction(
+        List<Relation> relations,
+        Optional<Condition> remainingCondition
+    ) {
+    }
+
     private static ExtractionResult extractJoinPredicates(Condition condition, Product product) {
         var joinPredicates = new ArrayList<JoinPredicate>();
         var remaining = new ArrayList<Condition>();
@@ -247,6 +317,77 @@ public class JoinPredicatePushdown {
         };
 
         return new ExtractionResult(joinPredicates, remainingCondition);
+    }
+
+    private static LocalPredicateExtraction extractLocalPredicates(Condition condition, Product product) {
+        var perRelationConditions = new ArrayList<List<Condition>>();
+        for (int i = 0; i < product.relations().size(); i++) {
+            perRelationConditions.add(new ArrayList<>());
+        }
+
+        var remaining = new ArrayList<Condition>();
+        List<Condition> operands = switch (condition) {
+            case Condition.And(var ops) -> ops;
+            default -> List.of(condition);
+        };
+
+        for (var operand : operands) {
+            findSingleRelationIndex(operand, product)
+                .filter(relIndex -> product.relations().get(relIndex) instanceof Relation.Table)
+                .ifPresentOrElse(
+                    relIndex -> perRelationConditions.get(relIndex).add(operand),
+                    () -> remaining.add(operand)
+                );
+        }
+
+        var relations = new ArrayList<Relation>();
+        var changed = false;
+        for (int i = 0; i < product.relations().size(); i++) {
+            var relation = product.relations().get(i);
+            var localConditions = perRelationConditions.get(i);
+            if (localConditions.isEmpty()) {
+                relations.add(relation);
+                continue;
+            }
+
+            changed = true;
+            relations.add(wrapRelationWithFilter(
+                relation,
+                localConditions.size() == 1 ? localConditions.getFirst() : Condition.and(localConditions),
+                derivedNodeId(product.nodeId(), i)
+            ));
+        }
+
+        if (!changed) {
+            return new LocalPredicateExtraction(product.relations(), Optional.of(condition));
+        }
+
+        Optional<Condition> remainingCondition = switch (remaining.size()) {
+            case 0 -> Optional.empty();
+            case 1 -> Optional.of(remaining.getFirst());
+            default -> Optional.of(Condition.and(remaining));
+        };
+        return new LocalPredicateExtraction(relations, remainingCondition);
+    }
+
+    private static Relation wrapRelationWithFilter(Relation relation, Condition condition, int nodeId) {
+        var relationProduct = new Product(List.of(relation), nodeId);
+        var filteredAttributes = relation.attributes().stream()
+            .map(attr -> relation.alias() + "_" + attr)
+            .toList();
+        var filtered = new Filter(relationProduct, condition, filteredAttributes);
+        var projection = new Return(
+            filtered,
+            relation.attributes().stream()
+                .map(attr -> Return.AttributeRef.attr(relation.alias() + "_" + attr, attr))
+                .toList(),
+            false
+        );
+        return Relation.subquery(relation.alias(), projection, relation.attributes());
+    }
+
+    private static int derivedNodeId(int productNodeId, int relationIndex) {
+        return 1_000_000 + (productNodeId * 100) + relationIndex;
     }
 
     private static Optional<JoinPredicate> tryExtractJoinPredicate(
@@ -281,6 +422,77 @@ public class JoinPredicatePushdown {
             leftInfo.relIndex(), leftInfo.rawAttr(),
             rightInfo.relIndex(), rightInfo.rawAttr()
         ));
+    }
+
+    private static Optional<Integer> findSingleRelationIndex(Condition condition, Product product) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, _) -> mergeRelationIndices(
+                findSingleRelationIndex(left, product),
+                findSingleRelationIndex(right, product)
+            );
+            case Condition.IsNull(var attrName, _) -> findRelation(attrName, product).map(RelInfo::relIndex);
+            case Condition.Like(var left, var pattern, _) -> mergeRelationIndices(
+                findSingleRelationIndex(left, product),
+                findSingleRelationIndex(pattern, product)
+            );
+            case Condition.And(var operands) -> mergeRelationIndices(
+                operands.stream().map(operand -> findSingleRelationIndex(operand, product)).toList()
+            );
+            case Condition.Or(var operands) -> mergeRelationIndices(
+                operands.stream().map(operand -> findSingleRelationIndex(operand, product)).toList()
+            );
+            case Condition.Not(var operand) -> findSingleRelationIndex(operand, product);
+            case Condition.Exists _, Condition.InSubquery _ -> Optional.empty();
+        };
+    }
+
+    private static Optional<Integer> findSingleRelationIndex(IRExpression expression, Product product) {
+        return switch (expression) {
+            case IRExpression.ColumnRef(var columnName) -> findRelation(columnName, product).map(RelInfo::relIndex);
+            case IRExpression.Literal _ -> Optional.of(-1);
+            case IRExpression.BinaryOp(var left, _, var right) -> mergeRelationIndices(
+                findSingleRelationIndex(left, product),
+                findSingleRelationIndex(right, product)
+            );
+            case IRExpression.Cast(var expr, _) -> findSingleRelationIndex(expr, product);
+            case IRExpression.FunctionCall(_, var arguments) -> mergeRelationIndices(
+                arguments.stream().map(argument -> findSingleRelationIndex(argument, product)).toList()
+            );
+            case IRExpression.CaseWhen(var whens, var elseExpr) -> {
+                var relationIndices = new ArrayList<Optional<Integer>>();
+                whens.forEach(when -> {
+                    relationIndices.add(findSingleRelationIndex(when.condition(), product));
+                    relationIndices.add(findSingleRelationIndex(when.result(), product));
+                });
+                elseExpr.stream().forEach(expr -> relationIndices.add(findSingleRelationIndex(expr, product)));
+                yield mergeRelationIndices(relationIndices);
+            }
+            case IRExpression.ScalarSubquery _, IRExpression.Aggregate _ -> Optional.empty();
+        };
+    }
+
+    private static Optional<Integer> mergeRelationIndices(Optional<Integer> left, Optional<Integer> right) {
+        if (left.isEmpty() || right.isEmpty()) {
+            return Optional.empty();
+        }
+        if (left.get() == -1) {
+            return right;
+        }
+        if (right.get() == -1) {
+            return left;
+        }
+        return left.equals(right) ? left : Optional.empty();
+    }
+
+    private static Optional<Integer> mergeRelationIndices(List<Optional<Integer>> relationIndices) {
+        Optional<Integer> current = Optional.of(-1);
+        for (var relationIndex : relationIndices) {
+            current = mergeRelationIndices(current, relationIndex);
+            if (current.isEmpty()) {
+                return Optional.empty();
+            }
+        }
+        return current.filter(index -> index != -1);
     }
 
     private record RelInfo(int relIndex, String rawAttr) {
