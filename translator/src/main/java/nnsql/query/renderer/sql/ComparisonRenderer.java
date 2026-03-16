@@ -352,13 +352,17 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         var subqueryIR = subquery.subqueryPipeline().getFirst();
         var finalBaseName = subqueryRenderer.apply(subqueryIR, ctx);
 
-        var valueTable = table(attrTable(finalBaseName, valueAttribute));
+        var valueTable = table(correlatedSubqueryAttrTable(subqueryIR, finalBaseName, valueAttribute));
         var ps = new PlainSelect();
         ps.setFromItem(valueTable);
         ps.addSelectItem(column(valueTable, "v"), new Alias("subquery_value", true));
 
         for (var correlation : subquery.correlations()) {
-            var innerTable = table(attrTable(finalBaseName, correlation.innerAttribute()));
+            var innerTable = table(correlatedSubqueryAttrTable(
+                subqueryIR,
+                finalBaseName,
+                correlation.innerAttribute()
+            ));
             ps.addSelectItem(column(innerTable, "v"), new Alias(correlation.innerAttribute(), true));
             ps.addJoins(join(
                 innerTable,
@@ -370,6 +374,12 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         }
 
         return ps;
+    }
+
+    private String correlatedSubqueryAttrTable(IRNode subqueryIR, String finalBaseName, String attribute) {
+        return subqueryIR instanceof Return
+            ? attrCTE(finalBaseName, attribute)
+            : attrTable(finalBaseName, attribute);
     }
 
     private Expression renderExistsForPredicate(

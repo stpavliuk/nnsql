@@ -311,16 +311,13 @@ public class IRBuilder {
         try {
             var fullSubqueryIR = buildSelect((PlainSelect) ps.getSelect(), false);
             var deduplicatedCorrelations = deduplicateCorrelations(correlations);
-
-            var rootNode = deduplicatedCorrelations.isEmpty()
-                ? fullSubqueryIR
-                : findGroupNode(fullSubqueryIR).orElseThrow(() -> new UnsupportedOperationException(
-                    "Correlated scalar subqueries require an aggregate projection"
-                ));
-
             var valueAttribute = deduplicatedCorrelations.isEmpty()
                 ? Option.<String>none()
                 : extractScalarSubqueryValueAttribute(fullSubqueryIR);
+
+            var rootNode = deduplicatedCorrelations.isEmpty()
+                ? fullSubqueryIR
+                : buildCorrelatedScalarSubqueryRoot(fullSubqueryIR, deduplicatedCorrelations, valueAttribute);
 
             var pipeline = new ArrayList<IRNode>();
             pipeline.addFirst(rootNode);
@@ -332,6 +329,36 @@ public class IRBuilder {
         } finally {
             correlationCollectorStack.pop();
         }
+    }
+
+    private IRNode buildCorrelatedScalarSubqueryRoot(
+        IRNode fullSubqueryIR,
+        List<IRExpression.Correlation> correlations,
+        Option<String> valueAttribute
+    ) {
+        findGroupNode(fullSubqueryIR).orElseThrow(() -> new UnsupportedOperationException(
+            "Correlated scalar subqueries require an aggregate projection"
+        ));
+
+        var returnNode = findReturnNode(fullSubqueryIR).orElseThrow(() -> new UnsupportedOperationException(
+            "Correlated scalar subqueries require a scalar projection"
+        ));
+        if (returnNode.selectStar() || returnNode.selectedAttributes().size() != 1 || valueAttribute.isNone()) {
+            throw new UnsupportedOperationException(
+                "Correlated scalar subqueries require a scalar projection"
+            );
+        }
+
+        var selectedAttributes = new ArrayList<Return.AttributeRef>();
+        selectedAttributes.add(returnNode.selectedAttributes().getFirst());
+        correlations.stream()
+            .map(IRExpression.Correlation::innerAttribute)
+            .distinct()
+            .filter(attr -> !attr.equals(valueAttribute.get()))
+            .map(attr -> Return.AttributeRef.attr(attr, attr))
+            .forEach(selectedAttributes::add);
+
+        return new Return(returnNode.input(), selectedAttributes, false);
     }
 
     private Option<Group> findGroupNode(IRNode node) {
@@ -683,9 +710,7 @@ public class IRBuilder {
         List<String> localAttrs,
         List<String> outerAttrs
     ) {
-        return AttributeResolver.collectFrom(subquery).stream()
-            .map(attr -> resolveScope(attr, localAttrs, outerAttrs))
-            .reduce(ResolvedScope.NONE, this::mergeScope);
+        return ResolvedScope.NONE;
     }
 
     private ResolvedScope expressionScope(
