@@ -10,6 +10,7 @@ import nnsql.query.ir.IRNode;
 import nnsql.query.renderer.RenderContext;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.function.BiFunction;
 
@@ -249,24 +250,30 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
         var coreIR = stripProjection(subqueryIR);
         var innerBaseName = comparisonRenderer.renderSubqueryBaseName(coreIR, ctx);
 
-        var innerIdTbl = table(idTable(innerBaseName));
         var ps = new PlainSelect();
         ps.addSelectItem(new AllColumns());
-        ps.setFromItem(innerIdTbl);
 
         var joins = new ArrayList<net.sf.jsqlparser.statement.select.Join>();
         var conditions = new ArrayList<Expression>();
+        var firstCorrelation = correlations.getFirst();
+        var anchorInnerAttrTbl = table(attrTable(innerBaseName, firstCorrelation.innerAttribute()));
+        ps.setFromItem(anchorInnerAttrTbl);
+
+        var innerAttrTables = new LinkedHashMap<String, net.sf.jsqlparser.schema.Table>();
+        innerAttrTables.put(firstCorrelation.innerAttribute(), anchorInnerAttrTbl);
 
         for (var correlation : correlations) {
-            var innerAttrTbl = table(attrTable(innerBaseName, correlation.innerAttribute()));
-
-            joins.add(join(
-                innerAttrTbl,
-                new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
-                    column(innerAttrTbl, "id"),
-                    column(innerIdTbl, "id")
-                )
-            ));
+            var innerAttrTbl = innerAttrTables.computeIfAbsent(correlation.innerAttribute(), innerAttribute -> {
+                var table = table(attrTable(innerBaseName, innerAttribute));
+                joins.add(join(
+                    table,
+                    new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                        column(table, "id"),
+                        column(anchorInnerAttrTbl, "id")
+                    )
+                ));
+                return table;
+            });
 
             conditions.add(comparison(
                 correlatedOuterValueExpr(
