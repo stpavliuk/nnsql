@@ -10,6 +10,7 @@ import nnsql.query.ir.*;
 import nnsql.query.renderer.RenderContext;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.function.BiFunction;
 
@@ -294,7 +295,22 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         boolean negate,
         RenderContext ctx
     ) {
-        var correlatedRows = renderCorrelatedSubqueryRows(subquery, ctx);
+        if (subquery.subqueryPipeline().isEmpty()) {
+            throw new IllegalStateException("Correlated scalar subquery has empty pipeline");
+        }
+        if (subquery.correlations().isEmpty()) {
+            throw new IllegalStateException("Correlated scalar subquery is missing correlation metadata");
+        }
+
+        var valueAttribute = subquery.valueAttribute().orElseThrow(() -> new IllegalStateException(
+            "Correlated scalar subquery is missing value attribute"
+        ));
+        var subqueryIR = subquery.subqueryPipeline().getFirst();
+        var finalBaseName = subqueryRenderer.apply(subqueryIR, ctx);
+        var valueTable = tableAlias(
+            correlatedSubqueryAttrTable(subqueryIR, finalBaseName, valueAttribute),
+            "corr_subquery_value"
+        );
 
         var ps = new PlainSelect();
         ps.addSelectItem(new AllColumns());
@@ -332,15 +348,15 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             conditions
         );
 
-        var subqueryFromItem = new ParenthesedSelect();
-        subqueryFromItem.setSelect(correlatedRows);
-        subqueryFromItem.setAlias(new Alias("corr_subquery", false));
-        joins.add(simpleJoin(subqueryFromItem));
+        joins.add(simpleJoin(valueTable));
+
+        var innerValueExprs = new LinkedHashMap<String, Expression>();
+        innerValueExprs.put(valueAttribute, column(valueTable, "v"));
 
         var valueComparison = comparison(
             ExpressionSqlRenderer.toSqlExpr(leftExpr, rel),
             op,
-            column("corr_subquery", "subquery_value")
+            column(valueTable, "v")
         );
         if (negate) {
             valueComparison = not(paren(valueComparison));
@@ -348,10 +364,24 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         conditions.add(valueComparison);
 
         for (var correlation : subquery.correlations()) {
+            var innerValueExpr = innerValueExprs.computeIfAbsent(correlation.innerAttribute(), innerAttribute -> {
+                var innerTable = tableAlias(
+                    correlatedSubqueryAttrTable(subqueryIR, finalBaseName, innerAttribute),
+                    "corr_subquery_attr_" + innerValueExprs.size()
+                );
+                joins.add(join(
+                    innerTable,
+                    new EqualsTo(
+                        column(innerTable, "id"),
+                        column(valueTable, "id")
+                    )
+                ));
+                return column(innerTable, "v");
+            });
             conditions.add(comparison(
                 column(attrTable(rel, correlation.outerAttribute()), "v"),
                 correlation.operator(),
-                column("corr_subquery", correlation.innerAttribute())
+                innerValueExpr
             ));
         }
 
