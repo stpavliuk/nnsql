@@ -231,6 +231,9 @@ class QueryTranslationTest {
         assertTrue(inSql.contains("product_0_R_B.v = 2.0"));
         assertTrue(inSql.contains("product_0_R_B.v = 3.0"));
         assertTrue(inSql.contains(" OR "));
+        assertFalse(inSql.contains(
+            "EXISTS (SELECT * FROM product_0_R_B WHERE product_0_R_B.id = product_0_id.id"
+        ));
 
         var notInSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.B NOT IN (1, 2, 3)"
@@ -285,6 +288,9 @@ class QueryTranslationTest {
         assertTrue(sql.contains("product_0_R_B.v = 2.0"));
         assertTrue(sql.contains("product_0_R_B.v = 3.0"));
         assertTrue(sql.contains("product_0_R_B.v > 0.0"));
+        assertTrue(sql.contains(
+            "((product_0_R_B.v = 1.0) OR (product_0_R_B.v = 2.0) OR (product_0_R_B.v = 3.0))"
+        ));
     }
 
     @Test
@@ -312,6 +318,30 @@ class QueryTranslationTest {
         ));
         assertFalse(sql.contains(
             "EXISTS (SELECT * FROM product_0_lineitem_l_quantity WHERE product_0_lineitem_l_quantity.id = product_0_id.id AND product_0_lineitem_l_quantity.v >= 1.0)"
+        ));
+        assertFalse(sql.contains(
+            "EXISTS (SELECT * FROM product_0_part_p_container WHERE product_0_part_p_container.id = product_0_id.id"
+        ));
+        assertFalse(sql.contains(
+            "EXISTS (SELECT * FROM product_0_lineitem_l_shipmode WHERE product_0_lineitem_l_shipmode.id = product_0_id.id"
+        ));
+    }
+
+    @Test
+    void testOrBranchesWithSharedRequiredColumnsInlineSafely() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE (R.A = 1 AND R.B = 2) OR (R.A = 3 AND R.B = 4)"
+        ));
+
+        assertTrue(sql.contains("product_0_R_A.v = 1.0"));
+        assertTrue(sql.contains("product_0_R_B.v = 2.0"));
+        assertTrue(sql.contains("product_0_R_A.v = 3.0"));
+        assertTrue(sql.contains("product_0_R_B.v = 4.0"));
+        assertFalse(sql.contains(
+            "EXISTS (SELECT * FROM product_0_R_A WHERE product_0_R_A.id = product_0_id.id"
+        ));
+        assertFalse(sql.contains(
+            "EXISTS (SELECT * FROM product_0_R_B WHERE product_0_R_B.id = product_0_id.id"
         ));
     }
 

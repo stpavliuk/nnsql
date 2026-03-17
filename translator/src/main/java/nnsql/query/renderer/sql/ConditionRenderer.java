@@ -118,7 +118,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             );
         }
 
-        whereConditions.addAll(inlinePredicates.stream().map(InlinePredicate::predicate).toList());
+        whereConditions.addAll(inlinePredicates.stream().map(InlinePredicate::predicate).map(Sql::paren).toList());
         for (var inlinedComparison : inlinedCorrelatedComparisons) {
             joins.add(simpleJoin(inlinedComparison.fromItem()));
             whereConditions.addAll(inlinedComparison.predicates());
@@ -387,7 +387,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             .distinct()
             .toList();
         if (requiredColumns.isEmpty()) {
-            return andAll(inlinePredicates.stream().map(InlinePredicate::predicate).toList());
+            return andAll(inlinePredicates.stream().map(InlinePredicate::predicate).map(Sql::paren).toList());
         }
 
         var idTbl = table(idTable(relationName));
@@ -410,7 +410,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             ps.setJoins(joins);
         }
 
-        whereConditions.addAll(inlinePredicates.stream().map(InlinePredicate::predicate).toList());
+        whereConditions.addAll(inlinePredicates.stream().map(InlinePredicate::predicate).map(Sql::paren).toList());
         ps.setWhere(andAll(whereConditions));
 
         return exists(ps);
@@ -432,7 +432,10 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
                 like.pattern(),
                 relationName
             );
-            case Condition.And(var operands) -> inlineLogicalCondition(operands, relationName);
+            case Condition.And(var operands) ->
+                inlineLogicalCondition(Condition.and(operands), operands, relationName, true);
+            case Condition.Or(var operands) ->
+                inlineLogicalCondition(Condition.or(operands), operands, relationName, false);
             case Condition.Not(var operand) -> inlineCondition(operand, relationName)
                 .map(inline -> new InlinePredicate(
                     condition,
@@ -444,8 +447,10 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
     }
 
     private java.util.Optional<InlinePredicate> inlineLogicalCondition(
+        Condition sourceCondition,
         List<Condition> operands,
-        String relationName
+        String relationName,
+        boolean conjunction
     ) {
         var inlinedOperands = operands.stream()
             .map(operand -> inlineCondition(operand, relationName))
@@ -458,20 +463,40 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             .map(java.util.Optional::orElseThrow)
             .toList();
 
-        var requiredColumns = predicates.stream()
-            .flatMap(inline -> inline.requiredColumns().stream())
-            .distinct()
-            .toList();
+        if (!conjunction && !haveMatchingRequiredColumns(predicates)) {
+            return java.util.Optional.empty();
+        }
+
+        var requiredColumns = conjunction
+            ? predicates.stream()
+                .flatMap(inline -> inline.requiredColumns().stream())
+                .distinct()
+                .toList()
+            : predicates.getFirst().requiredColumns().stream().distinct().toList();
         var predicateExpressions = predicates.stream()
             .map(InlinePredicate::predicate)
             .toList();
+        var groupedPredicates = predicateExpressions.size() > 1
+            ? predicateExpressions.stream().map(Sql::paren).toList()
+            : predicateExpressions;
         var combinedPredicate = switch (predicateExpressions.size()) {
-            case 0 -> new net.sf.jsqlparser.expression.BooleanValue(true);
+            case 0 -> new net.sf.jsqlparser.expression.BooleanValue(conjunction);
             case 1 -> predicateExpressions.getFirst();
-            default -> andAll(predicateExpressions);
+            default -> conjunction ? andAll(groupedPredicates) : orAll(groupedPredicates);
         };
 
-        return java.util.Optional.of(new InlinePredicate(Condition.and(operands), combinedPredicate, requiredColumns));
+        return java.util.Optional.of(new InlinePredicate(sourceCondition, combinedPredicate, requiredColumns));
+    }
+
+    private boolean haveMatchingRequiredColumns(List<InlinePredicate> predicates) {
+        if (predicates.isEmpty()) {
+            return true;
+        }
+
+        var firstColumns = new java.util.LinkedHashSet<>(predicates.getFirst().requiredColumns());
+        return predicates.stream()
+            .skip(1)
+            .allMatch(predicate -> firstColumns.equals(new java.util.LinkedHashSet<>(predicate.requiredColumns())));
     }
 
     private java.util.Optional<InlinePredicate> inlineComparison(
