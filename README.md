@@ -58,6 +58,49 @@ Run lint checks (Qodana):
 ./gradlew lint
 ```
 
+## TPCH setup and run
+
+Generate TPCH fixtures for the integration tests:
+```bash
+python3 tpch-tests/scripts/setup_benchmark_data.py --scale-factor 1
+```
+
+The generator requires either `tpchgen-cli` or `uvx`. By default it writes the
+fixtures to `tpch-tests/src/test/resources/data/<scale-factor>`.
+
+Run the TPCH integration suite:
+```bash
+./gradlew :tpch-tests:tpchTest
+```
+
+Run a specific subset of TPCH queries:
+```bash
+./gradlew :tpch-tests:tpchTest -Dnnsql.tpch.queries=1,3-5
+```
+
+Use a different fixture scale factor:
+```bash
+./gradlew :tpch-tests:tpchTest -Dnnsql.tpch.scaleFactor=10
+```
+
+Useful TPCH test properties:
+- `-Dnnsql.tpch.scaleFactor=<n>` selects `tpch-tests/src/test/resources/data/<n>`.
+- `-Dnnsql.tpch.queries=1,3-5` runs only the selected TPCH queries.
+- `-Dnnsql.tpch.nullRate=<rate>` controls the null injection rate for the translated 6NF target.
+- `-Dnnsql.tpch.timingRuns=<n>` sets how many measured executions are averaged per query.
+- `-Dnnsql.tpch.timingWarmupRuns=<n>` sets how many warmup executions run before timing.
+- `-PtpchDbDir=<path>` overrides the cache directory for the generated DuckDB databases.
+- `-Dnnsql.tpch.reportPath=<path>` overrides the HTML report output path.
+
+By default, the TPCH HTML report is written to
+`build/reports/tpch/query-report.html`.
+
+## Current limitations
+
+- Explicit `JOIN ... ON ...` syntax is not supported yet.
+- This means TPC-H `Q13` is currently unsupported, because it relies on
+  `LEFT OUTER JOIN orders ON c_custkey = o_custkey AND ...`.
+
 ## Further work
 - Implement additional SQL features and optimizations for 6NF queries
 - Use LOAD for data import instead of translating INSERT statements
