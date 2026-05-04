@@ -10,6 +10,7 @@ import nnsql.query.ir.*;
 import nnsql.query.renderer.RenderContext;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.function.BiFunction;
 
@@ -22,6 +23,16 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         List<Expression> predicates,
         List<String> requiredColumns
     ) {
+    }
+
+    record RenderedValueSubquery(
+        PlainSelect values,
+        PlainSelect nullRows
+    ) {
+    }
+
+    String renderSubqueryBaseName(IRNode subquery, RenderContext ctx) {
+        return subqueryRenderer.apply(subquery, ctx);
     }
 
     Expression renderTrue(Condition.Comparison comp, String rel, RenderContext ctx) {
@@ -39,7 +50,7 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         RenderContext ctx
     ) {
         var effectiveNegate = negate != inSubquery.isNegated();
-        var membershipSubquery = renderValueSubquery(
+        var membershipSubquery = renderMembershipSubquery(
             inSubquery.subquery(),
             "IN subquery",
             ctx
@@ -47,14 +58,26 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
 
         return switch (inSubquery.left()) {
             case IRExpression.ColumnRef(var col) ->
-                existsColumnInSubquery(rel, col, membershipSubquery, effectiveNegate);
+                applyNotInNullGuard(
+                    existsColumnInSubquery(rel, col, membershipSubquery.values(), effectiveNegate),
+                    membershipSubquery.nullRows(),
+                    effectiveNegate
+                );
 
             case IRExpression.Literal lit ->
-                inPredicate(literal(lit), membershipSubquery, effectiveNegate);
+                applyNotInNullGuard(
+                    inPredicate(literal(lit), membershipSubquery.values(), effectiveNegate),
+                    membershipSubquery.nullRows(),
+                    effectiveNegate
+                );
 
             case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
                  IRExpression.FunctionCall _ ->
-                renderComputedInSubquery(inSubquery.left(), membershipSubquery, rel, effectiveNegate);
+                applyNotInNullGuard(
+                    renderComputedInSubquery(inSubquery.left(), membershipSubquery.values(), rel, effectiveNegate),
+                    membershipSubquery.nullRows(),
+                    effectiveNegate
+                );
 
             case IRExpression.ScalarSubquery _ ->
                 throw unsupported("Scalar subquery on left side of IN");
@@ -93,8 +116,9 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             column(alias, "subquery_value")
         ));
         for (var correlation : subquery.correlations()) {
-            predicates.add(new EqualsTo(
+            predicates.add(comparison(
                 column(attrTable(rel, correlation.outerAttribute()), "v"),
+                correlation.operator(),
                 column(alias, correlation.innerAttribute())
             ));
         }
@@ -255,6 +279,14 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         return renderExistsForPredicate(rel, predicate, columns, hasCaseWhen);
     }
 
+    private Expression applyNotInNullGuard(
+        Expression predicate,
+        PlainSelect nullRows,
+        boolean negate
+    ) {
+        return negate ? and(predicate, notExists(nullRows)) : predicate;
+    }
+
     private Expression existsExprToCorrelatedSubquery(
         String rel,
         IRExpression leftExpr,
@@ -263,7 +295,22 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         boolean negate,
         RenderContext ctx
     ) {
-        var correlatedRows = renderCorrelatedSubqueryRows(subquery, ctx);
+        if (subquery.subqueryPipeline().isEmpty()) {
+            throw new IllegalStateException("Correlated scalar subquery has empty pipeline");
+        }
+        if (subquery.correlations().isEmpty()) {
+            throw new IllegalStateException("Correlated scalar subquery is missing correlation metadata");
+        }
+
+        var valueAttribute = subquery.valueAttribute().orElseThrow(() -> new IllegalStateException(
+            "Correlated scalar subquery is missing value attribute"
+        ));
+        var subqueryIR = subquery.subqueryPipeline().getFirst();
+        var finalBaseName = subqueryRenderer.apply(subqueryIR, ctx);
+        var valueTable = tableAlias(
+            correlatedSubqueryAttrTable(subqueryIR, finalBaseName, valueAttribute),
+            "corr_subquery_value"
+        );
 
         var ps = new PlainSelect();
         ps.addSelectItem(new AllColumns());
@@ -301,15 +348,15 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             conditions
         );
 
-        var subqueryFromItem = new ParenthesedSelect();
-        subqueryFromItem.setSelect(correlatedRows);
-        subqueryFromItem.setAlias(new Alias("corr_subquery", false));
-        joins.add(simpleJoin(subqueryFromItem));
+        joins.add(simpleJoin(valueTable));
+
+        var innerValueExprs = new LinkedHashMap<String, Expression>();
+        innerValueExprs.put(valueAttribute, column(valueTable, "v"));
 
         var valueComparison = comparison(
             ExpressionSqlRenderer.toSqlExpr(leftExpr, rel),
             op,
-            column("corr_subquery", "subquery_value")
+            column(valueTable, "v")
         );
         if (negate) {
             valueComparison = not(paren(valueComparison));
@@ -317,9 +364,24 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         conditions.add(valueComparison);
 
         for (var correlation : subquery.correlations()) {
-            conditions.add(new EqualsTo(
+            var innerValueExpr = innerValueExprs.computeIfAbsent(correlation.innerAttribute(), innerAttribute -> {
+                var innerTable = tableAlias(
+                    correlatedSubqueryAttrTable(subqueryIR, finalBaseName, innerAttribute),
+                    "corr_subquery_attr_" + innerValueExprs.size()
+                );
+                joins.add(join(
+                    innerTable,
+                    new EqualsTo(
+                        column(innerTable, "id"),
+                        column(valueTable, "id")
+                    )
+                ));
+                return column(innerTable, "v");
+            });
+            conditions.add(comparison(
                 column(attrTable(rel, correlation.outerAttribute()), "v"),
-                column("corr_subquery", correlation.innerAttribute())
+                correlation.operator(),
+                innerValueExpr
             ));
         }
 
@@ -346,13 +408,17 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         var subqueryIR = subquery.subqueryPipeline().getFirst();
         var finalBaseName = subqueryRenderer.apply(subqueryIR, ctx);
 
-        var valueTable = table(attrTable(finalBaseName, valueAttribute));
+        var valueTable = table(correlatedSubqueryAttrTable(subqueryIR, finalBaseName, valueAttribute));
         var ps = new PlainSelect();
         ps.setFromItem(valueTable);
         ps.addSelectItem(column(valueTable, "v"), new Alias("subquery_value", true));
 
         for (var correlation : subquery.correlations()) {
-            var innerTable = table(attrTable(finalBaseName, correlation.innerAttribute()));
+            var innerTable = table(correlatedSubqueryAttrTable(
+                subqueryIR,
+                finalBaseName,
+                correlation.innerAttribute()
+            ));
             ps.addSelectItem(column(innerTable, "v"), new Alias(correlation.innerAttribute(), true));
             ps.addJoins(join(
                 innerTable,
@@ -364,6 +430,12 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         }
 
         return ps;
+    }
+
+    private String correlatedSubqueryAttrTable(IRNode subqueryIR, String finalBaseName, String attribute) {
+        return subqueryIR instanceof Return
+            ? attrCTE(finalBaseName, attribute)
+            : attrTable(finalBaseName, attribute);
     }
 
     private Expression renderExistsForPredicate(
@@ -449,14 +521,16 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         var ps = new PlainSelect();
         ps.addSelectItem(new AllColumns());
         ps.setFromItem(leftTable);
-        ps.addJoins(simpleJoin(rightTable));
+        ps.addJoins(join(
+            rightTable,
+            new EqualsTo(
+                column(rightTable, "id"),
+                column(idTbl, "id")
+            )
+        ));
         ps.setWhere(andAll(List.of(
             new EqualsTo(
                 column(leftTable, "id"),
-                column(idTbl, "id")
-            ),
-            new EqualsTo(
-                column(rightTable, "id"),
                 column(idTbl, "id")
             ),
             comp
@@ -540,6 +614,14 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
     }
 
     private PlainSelect renderValueSubquery(IRNode subqueryIR, String subqueryType, RenderContext ctx) {
+        return renderMembershipSubquery(subqueryIR, subqueryType, ctx).values();
+    }
+
+    private RenderedValueSubquery renderMembershipSubquery(
+        IRNode subqueryIR,
+        String subqueryType,
+        RenderContext ctx
+    ) {
         var finalBaseName = subqueryRenderer.apply(subqueryIR, ctx);
 
         var returnNode = IRNodeTraversal.findReturnNode(subqueryIR);
@@ -555,10 +637,27 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         }
 
         var attr = attrs.getFirst();
-        var ps = new PlainSelect();
-        ps.addSelectItem(column("v"));
-        ps.setFromItem(table(attrCTE(finalBaseName, attr.alias())));
-        return ps;
+        var valueTable = table(attrCTE(finalBaseName, attr.alias()));
+
+        var values = new PlainSelect();
+        values.addSelectItem(column("v"));
+        values.setFromItem(valueTable);
+
+        var idTable = table(idTable(finalBaseName));
+        var nullProbe = new PlainSelect();
+        nullProbe.addSelectItem(new AllColumns());
+        nullProbe.setFromItem(valueTable);
+        nullProbe.setWhere(new EqualsTo(
+            column(valueTable, "id"),
+            column(idTable, "id")
+        ));
+
+        var nullRows = new PlainSelect();
+        nullRows.addSelectItem(new AllColumns());
+        nullRows.setFromItem(idTable);
+        nullRows.setWhere(notExists(nullProbe));
+
+        return new RenderedValueSubquery(values, nullRows);
     }
 
     private boolean evaluateConstant(IRExpression.Literal left, IRExpression.Literal right, String op) {

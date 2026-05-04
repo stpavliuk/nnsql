@@ -5,7 +5,6 @@ import net.sf.jsqlparser.statement.select.PlainSelect;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.sql.*;
 import java.util.*;
 import java.util.stream.IntStream;
 
@@ -15,23 +14,8 @@ public class TpchDataProvider implements BenchmarkDataProvider {
     private static final String RESOURCE_ROOT = "tpch/sqlite_tpc/";
     private static final int QUERY_COUNT = 22;
 
-    private final double scaleFactor;
-
-    public TpchDataProvider(double scaleFactor) {
-        this.scaleFactor = scaleFactor;
-    }
-
     @Override
-    public void generate(Connection conn) throws SQLException {
-        try (var stmt = conn.createStatement()) {
-            stmt.execute("INSTALL tpch");
-            stmt.execute("LOAD tpch");
-            stmt.execute("CALL dbgen(sf=%s)".formatted(scaleFactor));
-        }
-    }
-
-    @Override
-    public List<BenchmarkQuery> queries(Connection conn) {
+    public List<BenchmarkQuery> queries() {
         var filter = parseQueryFilter();
         return IntStream.rangeClosed(1, QUERY_COUNT)
             .filter(queryNr -> filter.isEmpty() || filter.contains(queryNr))

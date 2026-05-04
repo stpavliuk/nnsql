@@ -71,7 +71,11 @@ public sealed interface IRExpression {
         }
     }
 
-    record Correlation(String outerAttribute, String innerAttribute) {}
+    record Correlation(String outerAttribute, String innerAttribute, String operator) {
+        Correlation(String outerAttribute, String innerAttribute) {
+            this(outerAttribute, innerAttribute, "=");
+        }
+    }
 
     record ScalarSubquery(
         List<IRNode> subqueryPipeline,

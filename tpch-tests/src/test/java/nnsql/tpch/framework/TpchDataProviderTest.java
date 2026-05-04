@@ -30,8 +30,8 @@ class TpchDataProviderTest {
 
     @Test
     void queriesLoadsAll22ByDefault() throws Exception {
-        var provider = new TpchDataProvider(0.01);
-        var queries = provider.queries(null);
+        var provider = new TpchDataProvider();
+        var queries = provider.queries();
 
         assertEquals(22, queries.size());
         assertEquals("Q01", queries.getFirst().name());
@@ -41,9 +41,9 @@ class TpchDataProviderTest {
     @Test
     void queriesFilterSupportsIdsAndRanges() throws Exception {
         System.setProperty(QUERIES_PROPERTY, "1,3-4,22");
-        var provider = new TpchDataProvider(0.01);
+        var provider = new TpchDataProvider();
 
-        var queries = provider.queries(null);
+        var queries = provider.queries();
 
         assertEquals(4, queries.size());
         assertEquals("Q01", queries.getFirst().name());

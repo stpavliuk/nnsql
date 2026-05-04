@@ -16,10 +16,9 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import static nnsql.query.renderer.sql.Sql.attrCTE;
-import static nnsql.query.renderer.sql.Sql.attrTable;
 import static nnsql.query.renderer.sql.Sql.column;
 import static nnsql.query.renderer.sql.Sql.idTable;
-import static nnsql.query.renderer.sql.Sql.join;
+import static nnsql.query.renderer.sql.Sql.leftJoin;
 import static nnsql.query.renderer.sql.Sql.table;
 import static nnsql.query.renderer.sql.Sql.withSelect;
 
@@ -87,8 +86,8 @@ public class SQLIRRenderer implements IRRenderer {
     private String renderNode(IRNode node, RenderContext ctx) {
         return switch (node) {
             case Product p -> renderWithoutInput("product_", ctx, (c, b) -> {
-                preRenderSubqueryRelations(p, c);
-                productRenderer.render(p, c, b);
+                var subqueryBaseNames = preRenderSubqueryRelations(p, c);
+                productRenderer.render(p, c, b, subqueryBaseNames);
                 return b;
             });
 
@@ -111,18 +110,16 @@ public class SQLIRRenderer implements IRRenderer {
         };
     }
 
-    private void preRenderSubqueryRelations(Product product, RenderContext ctx) {
+    private java.util.Map<String, String> preRenderSubqueryRelations(Product product, RenderContext ctx) {
+        var subqueryBaseNames = new java.util.LinkedHashMap<String, String>();
         for (var rel : product.relations()) {
             if (rel instanceof Relation.Subquery(var alias, var ir, var attrs)) {
                 var subqBaseName = activeSubqueryCache.computeIfAbsent(
                     ir, k -> renderNode(k, ctx));
-                ctx.addCTE(alias + "__ID", "SELECT id FROM " + idTable(subqBaseName));
-                for (var attr : attrs) {
-                    ctx.addCTE(attrTable(alias, attr),
-                        "SELECT id, v FROM " + attrCTE(subqBaseName, attr));
-                }
+                subqueryBaseNames.put(alias, subqBaseName);
             }
         }
+        return subqueryBaseNames;
     }
 
     private String renderWithoutInput(String prefix, RenderContext ctx,
@@ -169,7 +166,7 @@ public class SQLIRRenderer implements IRRenderer {
         ps.setFromItem(baseIdTbl);
         for (var attr : attrs) {
             var attrTbl = table(attrCTE(baseName, attr.alias()));
-            ps.addJoins(join(attrTbl,
+            ps.addJoins(leftJoin(attrTbl,
                 new EqualsTo(column(baseIdTbl, "id"), column(attrTbl, "id"))));
         }
 

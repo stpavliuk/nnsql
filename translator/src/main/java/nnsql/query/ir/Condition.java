@@ -57,6 +57,14 @@ public sealed interface Condition {
         return new Exists(subquery, true);
     }
 
+    static Exists correlatedExists(IRNode subquery, List<IRExpression.Correlation> correlations) {
+        return new Exists(subquery, false, correlations);
+    }
+
+    static Exists correlatedNotExists(IRNode subquery, List<IRExpression.Correlation> correlations) {
+        return new Exists(subquery, true, correlations);
+    }
+
     static InSubquery inSubquery(IRExpression left, IRNode subquery) {
         return new InSubquery(left, subquery, false);
     }
@@ -107,7 +115,11 @@ public sealed interface Condition {
         }
     }
 
-    record Exists(IRNode subquery, boolean isNegated) implements Condition {
+    record Exists(IRNode subquery, boolean isNegated, List<IRExpression.Correlation> correlations) implements Condition {
+        Exists(IRNode subquery, boolean isNegated) {
+            this(subquery, isNegated, List.of());
+        }
+
         @Override
         public String toString() {
             return "%sEXISTS (SUBQUERY)".formatted(isNegated ? "NOT " : "");

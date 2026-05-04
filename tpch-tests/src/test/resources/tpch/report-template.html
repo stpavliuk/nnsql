@@ -17,6 +17,48 @@
       backdrop-filter: blur(6px);
       background: rgba(17, 24, 39, 0.90);
     }
+    .timing-chart-card {
+      backdrop-filter: blur(6px);
+      background: rgba(17, 24, 39, 0.86);
+    }
+    .timing-plot {
+      width: 100%;
+      min-height: 420px;
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 0.85rem;
+      background: rgba(15, 23, 42, 0.58);
+    }
+    .query-timing-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .query-timing-badge {
+      border-radius: 999px;
+      padding: 0.25rem 0.7rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      border: 1px solid transparent;
+    }
+    .query-timing-badge.source {
+      color: #bae6fd;
+      background: rgba(14, 165, 233, 0.16);
+      border-color: rgba(56, 189, 248, 0.32);
+    }
+    .query-timing-badge.translated {
+      color: #bbf7d0;
+      background: rgba(22, 163, 74, 0.16);
+      border-color: rgba(34, 197, 94, 0.32);
+    }
+    .query-timing-badge.comparison {
+      color: #fef3c7;
+      background: rgba(245, 158, 11, 0.16);
+      border-color: rgba(251, 191, 36, 0.32);
+    }
+    .timing-data {
+      display: none;
+    }
     .report-card {
       background: rgba(17, 24, 39, 0.82);
     }
@@ -128,11 +170,57 @@
       </div>
     </section>
 
+    <section class="card shadow-sm border-secondary timing-chart-card mb-3">
+      <div class="card-body">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
+          <div>
+            <h2 class="h4 mb-1">Execution Time Comparison</h2>
+            <p class="small text-secondary mb-0">
+              Grouped original vs translated timings for every query.
+            </p>
+          </div>
+          {{#if timingChart.hasData}}
+            <span class="badge rounded-pill text-bg-secondary px-3 py-2">Max: {{timingChart.maxExecution}}</span>
+          {{else}}
+            <span class="badge rounded-pill text-bg-secondary px-3 py-2">No timing data</span>
+          {{/if}}
+        </div>
+        {{#if timingChart.hasData}}
+          <div id="timing-plot" class="timing-plot"></div>
+          <div id="timing-data" class="timing-data">
+            {{#each timingChart.rows}}
+              <div
+                class="js-timing-row"
+                data-query-name="{{queryName}}"
+                data-source-ms="{{sourceExecutionMs}}"
+                data-source-label="{{sourceExecution}}"
+                data-translated-ms="{{translatedExecutionMs}}"
+                data-translated-label="{{translatedExecution}}"></div>
+            {{/each}}
+          </div>
+        {{else}}
+          <p class="small text-secondary mb-0">Execution times will appear once queries start producing timing data.</p>
+        {{/if}}
+        <noscript>
+          <p class="small text-secondary mb-0 mt-3">Enable JavaScript to render the interactive timing chart.</p>
+        </noscript>
+      </div>
+    </section>
+
     {{#each entries}}
       <details class="card border-{{statusClass}} shadow-sm report-card mb-3">
         <summary>
-          <header class="card-header d-flex justify-content-between align-items-center">
-            <h2 class="h5 mb-0">{{queryName}}</h2>
+          <header class="card-header d-flex justify-content-between align-items-center gap-3 flex-wrap">
+            <div class="d-flex flex-column gap-2">
+              <h2 class="h5 mb-0">{{queryName}}</h2>
+              <div class="query-timing-badges">
+                <span class="query-timing-badge source">Original: {{sourceExecution}}</span>
+                <span class="query-timing-badge translated">Translated: {{translatedExecution}}</span>
+                {{#if timingComparison}}
+                  <span class="query-timing-badge comparison">{{timingComparison}}</span>
+                {{/if}}
+              </div>
+            </div>
             <span class="badge text-bg-{{statusClass}}">{{statusLabel}}</span>
           </header>
           <div class="small text-secondary px-3 py-2 border-bottom">
@@ -178,6 +266,7 @@
     {{/each}}
   </main>
 
+  <script src="https://cdn.plot.ly/plotly-3.1.0.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/sql-formatter@15.6.10/dist/sql-formatter.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
   <script>
@@ -201,6 +290,91 @@
         if (window.hljs && typeof window.hljs.highlightElement === "function") {
           window.hljs.highlightElement(block);
         }
+      }
+
+      const timingPlot = document.getElementById("timing-plot");
+      if (timingPlot && window.Plotly && typeof window.Plotly.newPlot === "function") {
+        const timingRows = [...document.querySelectorAll(".js-timing-row")];
+        const queryNames = timingRows.map((row) => row.dataset.queryName || "");
+        const sourceValues = timingRows.map((row) => {
+          const value = Number.parseFloat(row.dataset.sourceMs || "");
+          return Number.isFinite(value) ? value : null;
+        });
+        const sourceLabels = timingRows.map((row) => row.dataset.sourceLabel || "n/a");
+        const translatedValues = timingRows.map((row) => {
+          const value = Number.parseFloat(row.dataset.translatedMs || "");
+          return Number.isFinite(value) ? value : null;
+        });
+        const translatedLabels = timingRows.map((row) => row.dataset.translatedLabel || "n/a");
+
+        window.Plotly.newPlot(
+          timingPlot,
+          [
+            {
+              type: "bar",
+              name: "Original",
+              x: queryNames,
+              y: sourceValues,
+              text: sourceLabels,
+              textposition: "outside",
+              cliponaxis: false,
+              marker: {
+                color: "#38bdf8"
+              },
+              hovertemplate: "<b>%{x}</b><br>Original: %{text}<extra></extra>"
+            },
+            {
+              type: "bar",
+              name: "Translated",
+              x: queryNames,
+              y: translatedValues,
+              text: translatedLabels,
+              textposition: "outside",
+              cliponaxis: false,
+              marker: {
+                color: "#22c55e"
+              },
+              hovertemplate: "<b>%{x}</b><br>Translated: %{text}<extra></extra>"
+            }
+          ],
+          {
+            barmode: "group",
+            bargap: 0.22,
+            paper_bgcolor: "rgba(0,0,0,0)",
+            plot_bgcolor: "rgba(15, 23, 42, 0.20)",
+            font: {
+              color: "#e2e8f0"
+            },
+            margin: {
+              l: 56,
+              r: 24,
+              t: 18,
+              b: 80
+            },
+            legend: {
+              orientation: "h",
+              yanchor: "bottom",
+              y: 1.02,
+              xanchor: "right",
+              x: 1
+            },
+            xaxis: {
+              tickangle: -30,
+              gridcolor: "rgba(148, 163, 184, 0.10)"
+            },
+            yaxis: {
+              title: {
+                text: "Execution Time (ms)"
+              },
+              gridcolor: "rgba(148, 163, 184, 0.18)",
+              zerolinecolor: "rgba(148, 163, 184, 0.22)"
+            }
+          },
+          {
+            responsive: true,
+            displayModeBar: false
+          }
+        );
       }
 
       const DEFAULT_ZOOM = 0.78;

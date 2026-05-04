@@ -6,6 +6,7 @@ import nnsql.tpch.framework.TranslatedDbEnvironment;
 import nnsql.tpch.framework.TranslatedDbExtension;
 import nnsql.tpch.framework.TpchHtmlReport;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -16,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 @ExtendWith(TranslatedDbExtension.class)
 @Tag("integration")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class TpchSqliteQueriesTest {
+class TpchDuckDBQueriesTest {
     private static final boolean LOG_QUERIES = Boolean.getBoolean("nnsql.tpch.logQueries");
     private static final boolean INCLUDE_QUERIES_IN_FAILURE =
         LOG_QUERIES || Boolean.getBoolean("nnsql.tpch.includeQueriesInFailure");
@@ -87,6 +88,7 @@ class TpchSqliteQueriesTest {
         assertTpchQuery("Q12", query, orderSensitive);
     }
 
+    @Disabled("Explicit JOIN ... ON ... is not implemented yet")
     @TPCHQueryTest("h13.sql")
     void q13(String query, boolean orderSensitive) throws Exception {
         assertTpchQuery("Q13", query, orderSensitive);

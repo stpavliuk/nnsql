@@ -10,6 +10,7 @@ import nnsql.query.ir.IRNode;
 import nnsql.query.renderer.RenderContext;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.function.BiFunction;
 
@@ -26,12 +27,24 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
         String relationName,
         RenderContext ctx
     ) {
-        if (!(condition instanceof Condition.And(var operands)) || operands.size() < 4) {
+        var fullyInline = inlineCondition(condition, relationName);
+        if (fullyInline.isPresent()) {
+            return java.util.Optional.of(buildInlineFilterIdSelect(
+                relationName,
+                List.of(fullyInline.get()),
+                List.of(),
+                List.of(),
+                List.of()
+            ));
+        }
+
+        if (!(condition instanceof Condition.And(var operands))) {
             return java.util.Optional.empty();
         }
 
         var inlinePredicates = new ArrayList<InlinePredicate>();
         var inlinedCorrelatedComparisons = new ArrayList<ComparisonRenderer.InlinedCorrelatedComparison>();
+        var inlinedCorrelatedExists = new ArrayList<InlinedCorrelatedExists>();
         var fallbackConditions = new ArrayList<Expression>();
 
         for (var operand : operands) {
@@ -44,18 +57,44 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
                 .orElse(false)) {
                 continue;
             }
-            fallbackConditions.add(render(operand, relationName, false, ctx));
+            if (inlineCorrelatedExists(operand, relationName, ctx)
+                .map(inlinedCorrelatedExists::add)
+                .orElse(false)) {
+                continue;
+            }
+            fallbackConditions.add(paren(render(operand, relationName, false, ctx)));
         }
 
-        if (inlinePredicates.size() < 3 && inlinedCorrelatedComparisons.isEmpty()) {
+        if (inlinePredicates.isEmpty()
+            && inlinedCorrelatedComparisons.isEmpty()
+            && inlinedCorrelatedExists.isEmpty()) {
             return java.util.Optional.empty();
         }
 
+        return java.util.Optional.of(buildInlineFilterIdSelect(
+            relationName,
+            inlinePredicates,
+            inlinedCorrelatedComparisons,
+            inlinedCorrelatedExists,
+            fallbackConditions
+        ));
+    }
+
+    private PlainSelect buildInlineFilterIdSelect(
+        String relationName,
+        List<InlinePredicate> inlinePredicates,
+        List<ComparisonRenderer.InlinedCorrelatedComparison> inlinedCorrelatedComparisons,
+        List<InlinedCorrelatedExists> inlinedCorrelatedExists,
+        List<Expression> fallbackConditions
+    ) {
         var requiredColumns = new ArrayList<String>();
         requiredColumns.addAll(inlinePredicates.stream()
             .flatMap(inline -> inline.requiredColumns().stream())
             .toList());
         requiredColumns.addAll(inlinedCorrelatedComparisons.stream()
+            .flatMap(inlined -> inlined.requiredColumns().stream())
+            .toList());
+        requiredColumns.addAll(inlinedCorrelatedExists.stream()
             .flatMap(inlined -> inlined.requiredColumns().stream())
             .toList());
         requiredColumns = new ArrayList<>(requiredColumns.stream().distinct().toList());
@@ -79,11 +118,14 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             );
         }
 
-        whereConditions.addAll(inlinePredicates.stream().map(InlinePredicate::predicate).toList());
+        whereConditions.addAll(inlinePredicates.stream().map(InlinePredicate::predicate).map(Sql::paren).toList());
         for (var inlinedComparison : inlinedCorrelatedComparisons) {
             joins.add(simpleJoin(inlinedComparison.fromItem()));
             whereConditions.addAll(inlinedComparison.predicates());
         }
+        whereConditions.addAll(inlinedCorrelatedExists.stream()
+            .map(InlinedCorrelatedExists::predicate)
+            .toList());
         whereConditions.addAll(fallbackConditions);
 
         if (!joins.isEmpty()) {
@@ -95,7 +137,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
                 : andAll(whereConditions)
         );
 
-        return java.util.Optional.of(ps);
+        return ps;
     }
 
     Expression renderTrue(Condition condition, String relationName, RenderContext ctx) {
@@ -119,7 +161,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
                 renderLike(like, negate, relationName, ctx);
 
             case Condition.Exists exists ->
-                renderExists(exists, negate, ctx);
+                renderExists(exists, negate, relationName, ctx);
 
             case Condition.InSubquery inSubquery ->
                 comparisonRenderer.renderInSubquery(inSubquery, relationName, negate, ctx);
@@ -144,10 +186,143 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
         return comparisonRenderer.renderTrue(comparison, relationName, ctx);
     }
 
-    private Expression renderExists(Condition.Exists existsCondition, boolean negate, RenderContext ctx) {
+    private Expression renderExists(Condition.Exists existsCondition, boolean negate,
+                                     String relationName, RenderContext ctx) {
         var effectiveNegate = negate != existsCondition.isNegated();
-        var subquery = comparisonRenderer.renderExistsSubquery(existsCondition.subquery(), ctx);
+
+        if (existsCondition.correlations().isEmpty()) {
+            var subquery = comparisonRenderer.renderExistsSubquery(existsCondition.subquery(), ctx);
+            return effectiveNegate ? notExists(subquery) : exists(subquery);
+        }
+
+        var subquery = renderCorrelatedExists(
+            existsCondition.subquery(), existsCondition.correlations(), relationName, ctx, false);
         return effectiveNegate ? notExists(subquery) : exists(subquery);
+    }
+
+    private java.util.Optional<InlinedCorrelatedExists> inlineCorrelatedExists(
+        Condition condition,
+        String outerRelationName,
+        RenderContext ctx
+    ) {
+        return switch (condition) {
+            case Condition.Exists existsCondition ->
+                inlineCorrelatedExists(existsCondition, outerRelationName, ctx, false);
+            case Condition.Not(var operand) when operand instanceof Condition.Exists existsCondition ->
+                inlineCorrelatedExists(existsCondition, outerRelationName, ctx, true);
+            default -> java.util.Optional.empty();
+        };
+    }
+
+    private java.util.Optional<InlinedCorrelatedExists> inlineCorrelatedExists(
+        Condition.Exists existsCondition,
+        String outerRelationName,
+        RenderContext ctx,
+        boolean negatedByWrapper
+    ) {
+        if (existsCondition.correlations().isEmpty()) {
+            return java.util.Optional.empty();
+        }
+
+        var subquery = renderCorrelatedExists(
+            existsCondition.subquery(),
+            existsCondition.correlations(),
+            outerRelationName,
+            ctx,
+            true
+        );
+        var useNotExists = existsCondition.isNegated() != negatedByWrapper;
+        var predicate = useNotExists ? notExists(subquery) : exists(subquery);
+        var requiredColumns = existsCondition.correlations().stream()
+            .map(IRExpression.Correlation::outerAttribute)
+            .distinct()
+            .toList();
+        return java.util.Optional.of(new InlinedCorrelatedExists(predicate, requiredColumns));
+    }
+
+    private PlainSelect renderCorrelatedExists(
+        IRNode subqueryIR,
+        List<IRExpression.Correlation> correlations,
+        String outerRelationName,
+        RenderContext ctx,
+        boolean useOuterJoinedAttributes
+    ) {
+        var coreIR = stripProjection(subqueryIR);
+        var innerBaseName = comparisonRenderer.renderSubqueryBaseName(coreIR, ctx);
+
+        var ps = new PlainSelect();
+        ps.addSelectItem(new AllColumns());
+
+        var joins = new ArrayList<net.sf.jsqlparser.statement.select.Join>();
+        var conditions = new ArrayList<Expression>();
+        var firstCorrelation = correlations.getFirst();
+        var anchorInnerAttrTbl = table(attrTable(innerBaseName, firstCorrelation.innerAttribute()));
+        ps.setFromItem(anchorInnerAttrTbl);
+
+        var innerAttrTables = new LinkedHashMap<String, net.sf.jsqlparser.schema.Table>();
+        innerAttrTables.put(firstCorrelation.innerAttribute(), anchorInnerAttrTbl);
+
+        for (var correlation : correlations) {
+            var innerAttrTbl = innerAttrTables.computeIfAbsent(correlation.innerAttribute(), innerAttribute -> {
+                var table = table(attrTable(innerBaseName, innerAttribute));
+                joins.add(join(
+                    table,
+                    new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                        column(table, "id"),
+                        column(anchorInnerAttrTbl, "id")
+                    )
+                ));
+                return table;
+            });
+
+            conditions.add(comparison(
+                correlatedOuterValueExpr(
+                    outerRelationName,
+                    correlation.outerAttribute(),
+                    joins,
+                    useOuterJoinedAttributes
+                ),
+                correlation.operator(),
+                column(innerAttrTbl, "v")
+            ));
+        }
+
+        if (!joins.isEmpty()) {
+            ps.setJoins(joins);
+        }
+        ps.setWhere(andAll(conditions));
+        return ps;
+    }
+
+    private Expression correlatedOuterValueExpr(
+        String outerRelationName,
+        String outerAttribute,
+        List<net.sf.jsqlparser.statement.select.Join> joins,
+        boolean useOuterJoinedAttributes
+    ) {
+        var outerAttrTbl = table(attrTable(outerRelationName, outerAttribute));
+        if (useOuterJoinedAttributes) {
+            return column(outerAttrTbl, "v");
+        }
+
+        var outerIdTbl = table(idTable(outerRelationName));
+        joins.add(join(
+            outerAttrTbl,
+            new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                column(outerAttrTbl, "id"),
+                column(outerIdTbl, "id")
+            )
+        ));
+        return column(outerAttrTbl, "v");
+    }
+
+    private static IRNode stripProjection(IRNode node) {
+        return switch (node) {
+            case nnsql.query.ir.Return r -> r.input();
+            case nnsql.query.ir.DuplElim d -> stripProjection(d.input());
+            case nnsql.query.ir.Sort s -> stripProjection(s.input());
+            default -> node;
+        };
     }
 
     private Expression renderIsNull(String attr, boolean isNull, String relationName) {
@@ -169,8 +344,9 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
         String relationName,
         RenderContext ctx
     ) {
-        if (operands.size() < 4) {
-            return renderLogical(operands, false, relationName, ctx, true);
+        var fullyInline = inlineCondition(Condition.and(operands), relationName);
+        if (fullyInline.isPresent()) {
+            return renderInlinePredicateExists(List.of(fullyInline.get()), relationName);
         }
 
         var inlinePredicates = new ArrayList<InlinePredicate>();
@@ -190,7 +366,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             conjunctionParts.add(paren(renderInlinePredicateExists(inlinePredicates, relationName)));
         } else {
             fallbackExpressions.addAll(inlinePredicates.stream()
-                .map(inline -> paren(inline.predicate()))
+                .map(inline -> paren(render(inline.sourceCondition(), relationName, false, ctx)))
                 .toList());
         }
         conjunctionParts.addAll(fallbackExpressions);
@@ -211,7 +387,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             .distinct()
             .toList();
         if (requiredColumns.isEmpty()) {
-            return andAll(inlinePredicates.stream().map(InlinePredicate::predicate).toList());
+            return andAll(inlinePredicates.stream().map(InlinePredicate::predicate).map(Sql::paren).toList());
         }
 
         var idTbl = table(idTable(relationName));
@@ -234,7 +410,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             ps.setJoins(joins);
         }
 
-        whereConditions.addAll(inlinePredicates.stream().map(InlinePredicate::predicate).toList());
+        whereConditions.addAll(inlinePredicates.stream().map(InlinePredicate::predicate).map(Sql::paren).toList());
         ps.setWhere(andAll(whereConditions));
 
         return exists(ps);
@@ -243,22 +419,88 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
     private java.util.Optional<InlinePredicate> inlineCondition(Condition condition, String relationName) {
         return switch (condition) {
             case Condition.Comparison comparison -> inlineComparison(
+                comparison,
                 comparison.left(),
                 comparison.operator(),
                 comparison.right(),
                 relationName
             );
-            case Condition.Like like when !like.isNegated() -> inlineComparison(
+            case Condition.Like like -> inlineComparison(
+                like,
                 like.left(),
-                "LIKE",
+                like.isNegated() ? "NOT LIKE" : "LIKE",
                 like.pattern(),
                 relationName
             );
+            case Condition.And(var operands) ->
+                inlineLogicalCondition(Condition.and(operands), operands, relationName, true);
+            case Condition.Or(var operands) ->
+                inlineLogicalCondition(Condition.or(operands), operands, relationName, false);
+            case Condition.Not(var operand) -> inlineCondition(operand, relationName)
+                .map(inline -> new InlinePredicate(
+                    condition,
+                    not(paren(inline.predicate())),
+                    inline.requiredColumns()
+                ));
             default -> java.util.Optional.empty();
         };
     }
 
+    private java.util.Optional<InlinePredicate> inlineLogicalCondition(
+        Condition sourceCondition,
+        List<Condition> operands,
+        String relationName,
+        boolean conjunction
+    ) {
+        var inlinedOperands = operands.stream()
+            .map(operand -> inlineCondition(operand, relationName))
+            .toList();
+        if (inlinedOperands.stream().anyMatch(java.util.Optional::isEmpty)) {
+            return java.util.Optional.empty();
+        }
+
+        var predicates = inlinedOperands.stream()
+            .map(java.util.Optional::orElseThrow)
+            .toList();
+
+        if (!conjunction && !haveMatchingRequiredColumns(predicates)) {
+            return java.util.Optional.empty();
+        }
+
+        var requiredColumns = conjunction
+            ? predicates.stream()
+                .flatMap(inline -> inline.requiredColumns().stream())
+                .distinct()
+                .toList()
+            : predicates.getFirst().requiredColumns().stream().distinct().toList();
+        var predicateExpressions = predicates.stream()
+            .map(InlinePredicate::predicate)
+            .toList();
+        var groupedPredicates = predicateExpressions.size() > 1
+            ? predicateExpressions.stream().map(Sql::paren).toList()
+            : predicateExpressions;
+        var combinedPredicate = switch (predicateExpressions.size()) {
+            case 0 -> new net.sf.jsqlparser.expression.BooleanValue(conjunction);
+            case 1 -> predicateExpressions.getFirst();
+            default -> conjunction ? andAll(groupedPredicates) : orAll(groupedPredicates);
+        };
+
+        return java.util.Optional.of(new InlinePredicate(sourceCondition, combinedPredicate, requiredColumns));
+    }
+
+    private boolean haveMatchingRequiredColumns(List<InlinePredicate> predicates) {
+        if (predicates.isEmpty()) {
+            return true;
+        }
+
+        var firstColumns = new java.util.LinkedHashSet<>(predicates.getFirst().requiredColumns());
+        return predicates.stream()
+            .skip(1)
+            .allMatch(predicate -> firstColumns.equals(new java.util.LinkedHashSet<>(predicate.requiredColumns())));
+    }
+
     private java.util.Optional<InlinePredicate> inlineComparison(
+        Condition sourceCondition,
         IRExpression left,
         String operator,
         IRExpression right,
@@ -274,7 +516,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
             ExpressionSqlRenderer.toSqlExpr(right, relationName)
         );
         var requiredColumns = ExpressionSqlRenderer.collectColumns(left, right);
-        return java.util.Optional.of(new InlinePredicate(predicate, requiredColumns));
+        return java.util.Optional.of(new InlinePredicate(sourceCondition, predicate, requiredColumns));
     }
 
     private boolean isInlineExpression(IRExpression expression) {
@@ -284,7 +526,10 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
         };
     }
 
-    private record InlinePredicate(Expression predicate, List<String> requiredColumns) {
+    private record InlinePredicate(Condition sourceCondition, Expression predicate, List<String> requiredColumns) {
+    }
+
+    private record InlinedCorrelatedExists(Expression predicate, List<String> requiredColumns) {
     }
 
     private Expression renderLogical(List<Condition> operands, boolean negate,

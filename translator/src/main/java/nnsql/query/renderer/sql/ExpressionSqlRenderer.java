@@ -116,7 +116,10 @@ final class ExpressionSqlRenderer {
             case IRExpression.Cast(var inner, var targetType) ->
                 new CastExpression("CAST", toSqlExpr(inner, baseName), targetType);
             case IRExpression.FunctionCall(var name, var arguments) ->
-                fn(name, arguments.stream().map(argument -> toSqlExpr(argument, baseName)).toArray(Expression[]::new));
+                fn(
+                    name,
+                    renderFunctionArguments(name, arguments, baseName).toArray(Expression[]::new)
+                );
             case IRExpression.CaseWhen(var whens, var elseExpr) -> {
                 var sqlCaseExpr = new CaseExpression();
                 var sqlWhens = whens.stream()
@@ -136,6 +139,58 @@ final class ExpressionSqlRenderer {
             }
             case IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->
                 throw new UnsupportedOperationException("Unsupported expression in SQL rendering");
+        };
+    }
+
+    private static List<Expression> renderFunctionArguments(
+        String functionName,
+        List<IRExpression> arguments,
+        String baseName
+    ) {
+        if (!isSubstringFunction(functionName)) {
+            return arguments.stream()
+                .map(argument -> toSqlExpr(argument, baseName))
+                .toList();
+        }
+
+        return java.util.stream.IntStream.range(0, arguments.size())
+            .mapToObj(index -> renderSubstringArgument(arguments.get(index), index, baseName))
+            .toList();
+    }
+
+    private static Expression renderSubstringArgument(
+        IRExpression argument,
+        int index,
+        String baseName
+    ) {
+        if (index == 0) {
+            return toSqlExpr(argument, baseName);
+        }
+
+        return switch (argument) {
+            case IRExpression.Literal(var value, var type)
+                when type == IRExpression.LiteralType.NUMBER
+                    && value instanceof Number number
+                    && isWholeNumber(number) ->
+                new LongValue(number.longValue());
+            default -> toSqlExpr(argument, baseName);
+        };
+    }
+
+    private static boolean isSubstringFunction(String functionName) {
+        return "SUBSTR".equalsIgnoreCase(functionName)
+            || "SUBSTRING".equalsIgnoreCase(functionName);
+    }
+
+    private static boolean isWholeNumber(Number number) {
+        return switch (number) {
+            case Integer _, Long _, Short _, Byte _ -> true;
+            case Float floatValue -> Float.isFinite(floatValue) && floatValue == Math.rint(floatValue);
+            case Double doubleValue -> Double.isFinite(doubleValue) && doubleValue == Math.rint(doubleValue);
+            default -> {
+                var decimal = new java.math.BigDecimal(number.toString());
+                yield decimal.stripTrailingZeros().scale() <= 0;
+            }
         };
     }
 

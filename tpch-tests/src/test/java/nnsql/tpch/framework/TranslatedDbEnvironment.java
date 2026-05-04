@@ -9,6 +9,8 @@ import java.util.*;
 public class TranslatedDbEnvironment implements AutoCloseable {
 
     private static final int QUERY_TIMEOUT_SECONDS = 15;
+    private static final String TIMING_RUNS_PROPERTY = "nnsql.tpch.timingRuns";
+    private static final String TIMING_WARMUP_RUNS_PROPERTY = "nnsql.tpch.timingWarmupRuns";
 
     private final Connection sourceConn;
     private final Connection targetConn;
@@ -74,10 +76,20 @@ public class TranslatedDbEnvironment implements AutoCloseable {
         public QueryExecution executeWithDiagnostics(String sql) throws SQLException {
             var explainPlan = explain(sql);
             var explainHtml = explainHtml(sql);
-            var startedAtNanos = System.nanoTime();
-            var rows = execute(sql);
-            var elapsedMs = (System.nanoTime() - startedAtNanos) / 1_000_000.0;
-            return new QueryExecution(rows, elapsedMs, explainPlan, explainHtml);
+            for (int i = 0; i < timingWarmupRuns(); i++) {
+                execute(sql);
+            }
+
+            var measuredRuns = timingRuns();
+            var totalElapsedMs = 0.0d;
+            List<List<Object>> rows = List.of();
+            for (int i = 0; i < measuredRuns; i++) {
+                var startedAtNanos = System.nanoTime();
+                rows = execute(sql);
+                totalElapsedMs += (System.nanoTime() - startedAtNanos) / 1_000_000.0;
+            }
+
+            return new QueryExecution(rows, totalElapsedMs / measuredRuns, explainPlan, explainHtml);
         }
 
         public List<List<Object>> execute(String sql) throws SQLException {
@@ -177,6 +189,27 @@ public class TranslatedDbEnvironment implements AutoCloseable {
             }
 
             return null;
+        }
+
+        private static int timingRuns() {
+            return readConfiguredRunCount(TIMING_RUNS_PROPERTY, 10, 1);
+        }
+
+        private static int timingWarmupRuns() {
+            return readConfiguredRunCount(TIMING_WARMUP_RUNS_PROPERTY, 0, 0);
+        }
+
+        private static int readConfiguredRunCount(String propertyName, int defaultValue, int minValue) {
+            var configuredValue = System.getProperty(propertyName);
+            if (configuredValue == null || configuredValue.isBlank()) {
+                return defaultValue;
+            }
+
+            try {
+                return Math.max(minValue, Integer.parseInt(configuredValue));
+            } catch (NumberFormatException _) {
+                return defaultValue;
+            }
         }
     }
 
