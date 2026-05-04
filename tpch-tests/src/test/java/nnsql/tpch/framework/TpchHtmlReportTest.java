@@ -69,6 +69,7 @@ class TpchHtmlReportTest {
             assertTrue(html.contains("data-translated-ms=\"34.567\""));
             assertTrue(html.contains("Original: 12.345 ms"));
             assertTrue(html.contains("Translated: 34.567 ms"));
+            assertTrue(html.contains("Translated is 2.80x slower"));
         } finally {
             entries.clear();
             if (originalReportPath == null) {

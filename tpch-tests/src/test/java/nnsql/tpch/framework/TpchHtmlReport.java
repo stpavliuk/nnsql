@@ -185,6 +185,7 @@ public final class TpchHtmlReport {
         var translatedExplainTree = toHtmlDataUri(entry.translatedExplainHtml());
         var sourceExecution = displayDuration(entry.sourceExecutionMs());
         var translatedExecution = displayDuration(entry.translatedExecutionMs());
+        var timingComparison = describeTimingComparison(entry.sourceExecutionMs(), entry.translatedExecutionMs());
 
         sections.add(new SectionModel(
             "Source Query - " + sourceExecution,
@@ -235,6 +236,7 @@ public final class TpchHtmlReport {
             entry.success() ? "PASS" : "FAIL",
             sourceExecution,
             translatedExecution,
+            timingComparison,
             String.valueOf(entry.orderSensitive()),
             displayCount(entry.sourceRowCount()),
             displayCount(entry.translatedRowCount()),
@@ -279,6 +281,26 @@ public final class TpchHtmlReport {
             return "n/a";
         }
         return "%.3f ms".formatted(ms);
+    }
+
+    private static String describeTimingComparison(Double sourceMs, Double translatedMs) {
+        if (sourceMs == null || translatedMs == null || sourceMs <= 0.0d || translatedMs <= 0.0d) {
+            return "";
+        }
+
+        var slowerMs = Math.max(sourceMs, translatedMs);
+        var fasterMs = Math.min(sourceMs, translatedMs);
+        var ratio = slowerMs / fasterMs;
+
+        if (!Double.isFinite(ratio)) {
+            return "";
+        }
+        if (Math.abs(ratio - 1.0d) < 0.05d) {
+            return "About the same speed";
+        }
+
+        var slowerLabel = translatedMs > sourceMs ? "Translated" : "Original";
+        return "%s is %.2fx slower".formatted(slowerLabel, ratio);
     }
 
     private static String displayCount(Integer count) {
@@ -348,6 +370,7 @@ public final class TpchHtmlReport {
         String statusLabel,
         String sourceExecution,
         String translatedExecution,
+        String timingComparison,
         String orderSensitive,
         String sourceRowCount,
         String translatedRowCount,
