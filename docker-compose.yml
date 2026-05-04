@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:18.3
+    ports:
+      - "5432:5432"
+    restart: always
+    volumes:
+      - "./data/postgres:/var/lib/postgresql"
+
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2048M
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
