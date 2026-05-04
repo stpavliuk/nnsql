@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 @ExtendWith(TranslatedDbExtension.class)
 @Tag("integration")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class TpchSqliteQueriesTest {
+class TpchDuckDBQueriesTest {
     private static final boolean LOG_QUERIES = Boolean.getBoolean("nnsql.tpch.logQueries");
     private static final boolean INCLUDE_QUERIES_IN_FAILURE =
         LOG_QUERIES || Boolean.getBoolean("nnsql.tpch.includeQueriesInFailure");

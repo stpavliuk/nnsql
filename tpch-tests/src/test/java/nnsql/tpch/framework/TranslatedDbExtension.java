@@ -96,6 +96,8 @@ public class TranslatedDbExtension implements BeforeAllCallback, AfterAllCallbac
             sourceConn = DriverManager.getConnection(duckDbJdbcUrl(sourceDbPath));
             targetConn = DriverManager.getConnection(duckDbJdbcUrl(targetDbPath));
             var schemaRegistry = buildSchemaRegistry(fixtureSet);
+            refreshOptimizerStatistics(sourceConn);
+            refreshOptimizerStatistics(targetConn);
             return buildEnvironment(sourceConn, targetConn, schemaRegistry, provider, cacheDir);
         } catch (Exception e) {
             closeQuietly(sourceConn);
@@ -133,6 +135,8 @@ public class TranslatedDbExtension implements BeforeAllCallback, AfterAllCallbac
             targetConn = DriverManager.getConnection(duckDbJdbcUrl(targetDbPath));
             initializeTranslatedTarget(targetConn, schemaRegistry, fixtureSet, stagedCsvDir, workDir.resolve("translated"));
 
+            refreshOptimizerStatistics(sourceConn);
+            refreshOptimizerStatistics(targetConn);
             return buildEnvironment(sourceConn, targetConn, schemaRegistry, provider, cacheDir);
         } catch (Exception e) {
             closeQuietly(sourceConn);
@@ -254,11 +258,19 @@ public class TranslatedDbExtension implements BeforeAllCallback, AfterAllCallbac
         for (var statement : sqlScript.split(";")) {
             var trimmed = statement.strip();
             if (!trimmed.isEmpty()) {
-                try (var stmt = conn.createStatement()) {
-                    stmt.execute(trimmed);
-                }
+                executeSql(conn, trimmed);
             }
         }
+    }
+
+    private static void executeSql(Connection conn, String sql) throws SQLException {
+        try (var stmt = conn.createStatement()) {
+            stmt.execute(sql);
+        }
+    }
+
+    static void refreshOptimizerStatistics(Connection conn) throws SQLException {
+        executeSql(conn, "ANALYZE");
     }
 
     private static String readUtf8(Path path) throws IOException {
