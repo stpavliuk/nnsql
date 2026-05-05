@@ -9,7 +9,10 @@ subprojects {
 }
 
 tasks.named('qodanaScan') {
-    arguments = ['--config', rootProject.file('qodana.yaml').absolutePath]
+    arguments = [
+        '--config', rootProject.file('qodana.yaml').absolutePath,
+        '--baseline', rootProject.file('qodana.sarif.json').absolutePath
+    ]
     environment 'ORG_GRADLE_PROJECT_nnsqlToolchainVersion', '21'
 }
 

@@ -3,7 +3,6 @@ package nnsql.query.renderer.sql;
 import net.sf.jsqlparser.expression.*;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
 import net.sf.jsqlparser.expression.operators.relational.InExpression;
-import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.select.*;
 
 import nnsql.query.ir.*;
@@ -12,6 +11,7 @@ import nnsql.query.renderer.RenderContext;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.BiFunction;
 
 import static nnsql.query.renderer.sql.Sql.*;
@@ -87,20 +87,20 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         };
     }
 
-    java.util.Optional<InlinedCorrelatedComparison> inlineCorrelatedComparison(
+    Optional<InlinedCorrelatedComparison> inlineCorrelatedComparison(
         Condition.Comparison comparison,
         String rel,
         RenderContext ctx
     ) {
         if (comparison.left() instanceof IRExpression.ScalarSubquery) {
-            return java.util.Optional.empty();
+            return Optional.empty();
         }
         if (!(comparison.right() instanceof IRExpression.ScalarSubquery subquery)
             || subquery.correlations().isEmpty()) {
-            return java.util.Optional.empty();
+            return Optional.empty();
         }
         if (ExpressionSqlRenderer.containsCaseWhen(comparison.left())) {
-            return java.util.Optional.empty();
+            return Optional.empty();
         }
 
         var alias = ctx.nextName("corr_subquery_");
@@ -226,8 +226,10 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.ColumnRef(var col) ->
                 existsLiteralToColumn(rel, col, op, lit, negate);
 
-            case IRExpression.Literal rightLit ->
-                new BooleanValue(evaluateConstant(lit, rightLit, op) != negate);
+            case IRExpression.Literal rightLit -> {
+                var comp = comparison(literal(lit), op, literal(rightLit));
+                yield negate ? not(paren(comp)) : comp;
+            }
 
             case IRExpression.ScalarSubquery subq -> {
                 if (subq.correlations().isEmpty()) {
@@ -658,24 +660,6 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         nullRows.setWhere(notExists(nullProbe));
 
         return new RenderedValueSubquery(values, nullRows);
-    }
-
-    private boolean evaluateConstant(IRExpression.Literal left, IRExpression.Literal right, String op) {
-        if (left.value() instanceof Number l && right.value() instanceof Number r) {
-            double lv = l.doubleValue();
-            double rv = r.doubleValue();
-            return switch (op) {
-                case "=" -> lv == rv;
-                case "!=" -> lv != rv;
-                case "<" -> lv < rv;
-                case ">" -> lv > rv;
-                case "<=" -> lv <= rv;
-                case ">=" -> lv >= rv;
-                default -> throw new IllegalArgumentException("Unknown operator: " + op);
-            };
-        }
-
-        throw new UnsupportedOperationException("Non-numeric constant comparison not supported");
     }
 
     private UnsupportedOperationException unsupported(String type) {

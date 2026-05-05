@@ -837,7 +837,7 @@ public class IRBuilder {
         if (like.getEscape() != null) {
             throw new UnsupportedOperationException("LIKE ... ESCAPE is not supported");
         }
-        if (like.isCaseInsensitive()) {
+        if (like.getLikeKeyWord() == LikeExpression.KeyWord.ILIKE) {
             throw new UnsupportedOperationException("Case-insensitive LIKE is not supported");
         }
 

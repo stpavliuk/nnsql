@@ -6,7 +6,6 @@ import net.sf.jsqlparser.expression.StringValue;
 import net.sf.jsqlparser.expression.CastExpression;
 
 import java.util.ArrayList;
-import java.util.List;
 
 import static nnsql.query.renderer.sql.Sql.fn;
 

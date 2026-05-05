@@ -68,7 +68,7 @@ public class TranslatedDbEnvironment implements AutoCloseable {
                 }
             });
         } catch (Exception e) {
-            System.err.println("Failed to cleanup db: %s".formatted(e));
+            System.err.println("Failed to cleanup db: " + e);
         }
     }
 

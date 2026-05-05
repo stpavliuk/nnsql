@@ -1,613 +1,258 @@
 package nnsql.query.optim;
 
-import nnsql.query.ir.*;
+import nnsql.query.ir.AggFilter;
+import nnsql.query.ir.Condition;
+import nnsql.query.ir.DuplElim;
+import nnsql.query.ir.Filter;
+import nnsql.query.ir.Group;
+import nnsql.query.ir.IRExpression;
+import nnsql.query.ir.IRNode;
+import nnsql.query.ir.Product;
+import nnsql.query.ir.Relation;
+import nnsql.query.ir.Return;
+import nnsql.query.ir.Sort;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Collectors;
 
-public class JoinPredicatePushdown {
-
-    public static IRNode optimize(IRNode node) {
-        return optimize(node, true, Set.of());
+public final class JoinPredicatePushdown {
+    private JoinPredicatePushdown() {
     }
 
-    private static IRNode optimize(
-        IRNode node,
-        boolean allowLocalPredicatePushdown,
-        Set<String> reservedRelationAliases
-    ) {
+    public static IRNode optimize(IRNode node) {
+        return optimize(node, Scope.root());
+    }
+
+    private static IRNode optimize(IRNode node, Scope scope) {
         return switch (node) {
-            case Product p -> optimizeProduct(p, reservedRelationAliases);
-            case Filter f -> optimizeFilter(new Filter(
-                optimize(f.input(), allowLocalPredicatePushdown, reservedRelationAliases),
-                optimizeCondition(f.condition(), allowLocalPredicatePushdown, reservedRelationAliases),
-                f.attributes()
-            ), allowLocalPredicatePushdown, reservedRelationAliases);
-            case Group g -> new Group(
-                optimize(g.input(), allowLocalPredicatePushdown, reservedRelationAliases), g.groupingAttributes(),
-                g.aggregates().stream()
-                    .map(aggregate -> optimizeAggregate(
-                        aggregate,
-                        allowLocalPredicatePushdown,
-                        reservedRelationAliases
-                    ))
-                    .toList(),
-                g.outputAttributes(), g.nodeId());
-            case AggFilter af -> new AggFilter(
-                optimize(af.input(), allowLocalPredicatePushdown, reservedRelationAliases),
-                optimizeCondition(af.condition(), allowLocalPredicatePushdown, reservedRelationAliases),
-                af.attributes());
-            case Return r -> new Return(
-                optimize(r.input(), allowLocalPredicatePushdown, reservedRelationAliases),
-                optimizeSelectedAttributes(
-                    r.selectedAttributes(),
-                    allowLocalPredicatePushdown,
-                    reservedRelationAliases
-                ),
-                r.selectStar());
-            case DuplElim d ->
-                new DuplElim(optimize(d.input(), allowLocalPredicatePushdown, reservedRelationAliases), d.attributes());
-            case Sort s ->
-                new Sort(optimize(s.input(), allowLocalPredicatePushdown, reservedRelationAliases), s.keys(), s.limit());
+            case Product product -> optimizeProduct(product, scope);
+            case Filter filter -> optimizeFilter(filter, scope);
+            case Group group -> optimizeGroup(group, scope);
+            case AggFilter aggFilter -> optimizeAggFilter(aggFilter, scope);
+            case Return ret -> optimizeReturn(ret, scope);
+            case DuplElim duplElim -> new DuplElim(optimize(duplElim.input(), scope), duplElim.attributes());
+            case Sort sort -> new Sort(optimize(sort.input(), scope), sort.keys(), sort.limit());
         };
     }
 
-    private static Product optimizeProduct(Product p, Set<String> reservedRelationAliases) {
-        var subqueryReservedAliases = new LinkedHashSet<>(reservedRelationAliases);
-        p.relations().stream().map(Relation::alias).forEach(subqueryReservedAliases::add);
-        var newRelations = p.relations().stream()
-            .map(r -> switch (r) {
-                case Relation.Subquery(var alias, var ir, var attrs) ->
-                    Relation.subquery(alias, optimize(ir, true, Set.copyOf(subqueryReservedAliases)), attrs);
-                case Relation.Table t -> (Relation) t;
-            })
-            .toList();
-        return new Product(newRelations, p.nodeId(), p.joinPredicates());
+    private static Product optimizeProduct(Product product, Scope scope) {
+        return product.withRelations(product.relations().stream()
+            .map(relation -> optimizeRelation(relation, scope.withReservedAliases(product.relations())))
+            .toList());
     }
 
-    private static List<Return.AttributeRef> optimizeSelectedAttributes(
-        List<Return.AttributeRef> attributes,
-        boolean allowLocalPredicatePushdown,
-        Set<String> reservedRelationAliases
-    ) {
-        return attributes.stream()
-            .map(attr -> switch (attr) {
-                case Return.ColumnAttributeRef columnAttr -> (Return.AttributeRef) columnAttr;
-                case Return.ExpressionAttributeRef expressionAttr ->
-                    Return.AttributeRef.expr(
-                        optimizeExpression(
-                            expressionAttr.source(),
-                            allowLocalPredicatePushdown,
-                            reservedRelationAliases
-                        ),
-                        expressionAttr.alias()
-                    );
-            })
+    private static Relation optimizeRelation(Relation relation, Scope scope) {
+        return switch (relation) {
+            case Relation.Subquery(var alias, var ir, var attributes) ->
+                Relation.subquery(alias, optimize(ir, scope.allowLocalPushdown()), attributes);
+            case Relation.Table table -> table;
+        };
+    }
+
+    private static IRNode optimizeFilter(Filter filter, Scope scope) {
+        var optimizedFilter = filter.withInputAndCondition(
+            optimize(filter.input(), scope),
+            optimizeCondition(filter.condition(), scope)
+        );
+
+        return switch (optimizedFilter.input()) {
+            case Product product when product.relations().size() >= 2 ->
+                new ProductFilterPushdown(
+                    optimizedFilter,
+                    product,
+                    scope.allowLocalPredicatePushdown(),
+                    scope.reservedRelationAliases()
+                ).optimize();
+            default -> optimizedFilter;
+        };
+    }
+
+    private static Group optimizeGroup(Group group, Scope scope) {
+        return new Group(
+            optimize(group.input(), scope),
+            group.groupingAttributes(),
+            group.aggregates().stream()
+                .map(aggregate -> optimizeAggregate(aggregate, scope))
+                .toList(),
+            group.outputAttributes(),
+            group.nodeId()
+        );
+    }
+
+    private static AggFilter optimizeAggFilter(AggFilter aggFilter, Scope scope) {
+        return new AggFilter(
+            optimize(aggFilter.input(), scope),
+            optimizeCondition(aggFilter.condition(), scope),
+            aggFilter.attributes()
+        );
+    }
+
+    private static Return optimizeReturn(Return ret, Scope scope) {
+        return new Return(
+            optimize(ret.input(), scope),
+            ret.selectedAttributes().stream()
+                .map(attribute -> optimizeAttribute(attribute, scope))
+                .toList(),
+            ret.selectStar()
+        );
+    }
+
+    private static Return.AttributeRef optimizeAttribute(Return.AttributeRef attribute, Scope scope) {
+        return switch (attribute) {
+            case Return.ColumnAttributeRef columnAttribute -> columnAttribute;
+            case Return.ExpressionAttributeRef expressionAttribute ->
+                Return.AttributeRef.expr(
+                    optimizeExpression(expressionAttribute.source(), scope),
+                    expressionAttribute.alias()
+                );
+        };
+    }
+
+    private static Condition optimizeCondition(Condition condition, Scope scope) {
+        return switch (condition) {
+            case Condition.Comparison comparison -> optimizeComparison(comparison, scope);
+            case Condition.IsNull isNull -> isNull;
+            case Condition.Like like -> optimizeLike(like, scope);
+            case Condition.Exists exists -> optimizeExists(exists, scope);
+            case Condition.InSubquery inSubquery -> optimizeInSubquery(inSubquery, scope);
+            case Condition.And(var operands) -> Condition.and(optimizeConditions(operands, scope));
+            case Condition.Or(var operands) -> Condition.or(optimizeConditions(operands, scope));
+            case Condition.Not(var operand) -> Condition.not(optimizeCondition(operand, scope));
+        };
+    }
+
+    private static Condition optimizeComparison(Condition.Comparison comparison, Scope scope) {
+        return Condition.compare(
+            optimizeExpression(comparison.left(), scope),
+            comparison.operator(),
+            optimizeExpression(comparison.right(), scope)
+        );
+    }
+
+    private static Condition.Like optimizeLike(Condition.Like like, Scope scope) {
+        return new Condition.Like(
+            optimizeExpression(like.left(), scope),
+            optimizeExpression(like.pattern(), scope),
+            like.isNegated()
+        );
+    }
+
+    private static Condition.Exists optimizeExists(Condition.Exists exists, Scope scope) {
+        return new Condition.Exists(
+            optimize(exists.subquery(), scope.disableLocalPushdown()),
+            exists.isNegated(),
+            exists.correlations()
+        );
+    }
+
+    private static Condition.InSubquery optimizeInSubquery(Condition.InSubquery inSubquery, Scope scope) {
+        return new Condition.InSubquery(
+            optimizeExpression(inSubquery.left(), scope),
+            optimize(inSubquery.subquery(), scope.disableLocalPushdown()),
+            inSubquery.isNegated()
+        );
+    }
+
+    private static List<Condition> optimizeConditions(List<Condition> conditions, Scope scope) {
+        return conditions.stream()
+            .map(condition -> optimizeCondition(condition, scope))
             .toList();
     }
 
-    private static IRExpression.Aggregate optimizeAggregate(
-        IRExpression.Aggregate aggregate,
-        boolean allowLocalPredicatePushdown,
-        Set<String> reservedRelationAliases
-    ) {
+    private static IRExpression optimizeExpression(IRExpression expression, Scope scope) {
+        return switch (expression) {
+            case IRExpression.ColumnRef columnRef -> columnRef;
+            case IRExpression.Literal literal -> literal;
+            case IRExpression.Aggregate aggregate -> optimizeAggregate(aggregate, scope);
+            case IRExpression.BinaryOp binaryOp -> optimizeBinaryOp(binaryOp, scope);
+            case IRExpression.Cast cast -> optimizeCast(cast, scope);
+            case IRExpression.FunctionCall functionCall -> optimizeFunctionCall(functionCall, scope);
+            case IRExpression.CaseWhen caseWhen -> optimizeCaseWhen(caseWhen, scope);
+            case IRExpression.ScalarSubquery scalarSubquery -> optimizeScalarSubquery(scalarSubquery, scope);
+        };
+    }
+
+    private static IRExpression.Aggregate optimizeAggregate(IRExpression.Aggregate aggregate, Scope scope) {
         return new IRExpression.Aggregate(
             aggregate.function(),
-            optimizeExpression(aggregate.argument(), allowLocalPredicatePushdown, reservedRelationAliases),
+            optimizeExpression(aggregate.argument(), scope),
             aggregate.alias(),
             aggregate.distinct()
         );
     }
 
-    private static Condition optimizeCondition(
-        Condition condition,
-        boolean allowLocalPredicatePushdown,
-        Set<String> reservedRelationAliases
-    ) {
-        return switch (condition) {
-            case Condition.Comparison(var left, var right, var operator) ->
-                Condition.compare(
-                    optimizeExpression(left, allowLocalPredicatePushdown, reservedRelationAliases),
-                    operator,
-                    optimizeExpression(right, allowLocalPredicatePushdown, reservedRelationAliases)
-                );
-            case Condition.IsNull isNull -> isNull;
-            case Condition.Like(var left, var pattern, var isNegated) ->
-                new Condition.Like(
-                    optimizeExpression(left, allowLocalPredicatePushdown, reservedRelationAliases),
-                    optimizeExpression(pattern, allowLocalPredicatePushdown, reservedRelationAliases),
-                    isNegated
-                );
-            case Condition.Exists(var subquery, var isNegated, var correlations) ->
-                new Condition.Exists(optimize(subquery, false, reservedRelationAliases), isNegated, correlations);
-            case Condition.InSubquery(var left, var subquery, var isNegated) ->
-                new Condition.InSubquery(
-                    optimizeExpression(left, allowLocalPredicatePushdown, reservedRelationAliases),
-                    optimize(subquery, false, reservedRelationAliases),
-                    isNegated
-                );
-            case Condition.And(var operands) ->
-                Condition.and(operands.stream()
-                    .map(operand -> optimizeCondition(operand, allowLocalPredicatePushdown, reservedRelationAliases))
-                    .toList());
-            case Condition.Or(var operands) ->
-                Condition.or(operands.stream()
-                    .map(operand -> optimizeCondition(operand, allowLocalPredicatePushdown, reservedRelationAliases))
-                    .toList());
-            case Condition.Not(var operand) ->
-                Condition.not(optimizeCondition(operand, allowLocalPredicatePushdown, reservedRelationAliases));
-        };
-    }
-
-    private static IRExpression optimizeExpression(
-        IRExpression expression,
-        boolean allowLocalPredicatePushdown,
-        Set<String> reservedRelationAliases
-    ) {
-        return switch (expression) {
-            case IRExpression.ColumnRef columnRef -> columnRef;
-            case IRExpression.Literal literal -> literal;
-            case IRExpression.Aggregate aggregate ->
-                optimizeAggregate(aggregate, allowLocalPredicatePushdown, reservedRelationAliases);
-            case IRExpression.BinaryOp(var left, var operator, var right) ->
-                new IRExpression.BinaryOp(
-                    optimizeExpression(left, allowLocalPredicatePushdown, reservedRelationAliases),
-                    operator,
-                    optimizeExpression(right, allowLocalPredicatePushdown, reservedRelationAliases)
-                );
-            case IRExpression.Cast(var expr, var targetType) ->
-                new IRExpression.Cast(
-                    optimizeExpression(expr, allowLocalPredicatePushdown, reservedRelationAliases),
-                    targetType
-                );
-            case IRExpression.FunctionCall(var name, var arguments) ->
-                new IRExpression.FunctionCall(
-                    name,
-                    arguments.stream()
-                        .map(argument -> optimizeExpression(
-                            argument,
-                            allowLocalPredicatePushdown,
-                            reservedRelationAliases
-                        ))
-                        .toList()
-                );
-            case IRExpression.CaseWhen(var whens, var elseExpr) ->
-                new IRExpression.CaseWhen(
-                    whens.stream()
-                        .map(when -> new IRExpression.WhenClause(
-                            optimizeCondition(when.condition(), allowLocalPredicatePushdown, reservedRelationAliases),
-                            optimizeExpression(when.result(), allowLocalPredicatePushdown, reservedRelationAliases)
-                        ))
-                        .toList(),
-                    elseExpr.map(expr -> optimizeExpression(expr, allowLocalPredicatePushdown, reservedRelationAliases))
-                );
-            case IRExpression.ScalarSubquery(var subqueryPipeline, var correlations, var valueAttribute) ->
-                new IRExpression.ScalarSubquery(
-                    subqueryPipeline.stream()
-                        .map(node -> optimize(node, false, reservedRelationAliases))
-                        .toList(),
-                    correlations,
-                    valueAttribute
-                );
-        };
-    }
-
-    private static IRNode optimizeFilter(
-        Filter filter,
-        boolean allowLocalPredicatePushdown,
-        Set<String> reservedRelationAliases
-    ) {
-        var optimizedInput = optimize(filter.input(), allowLocalPredicatePushdown, reservedRelationAliases);
-
-        if (!(optimizedInput instanceof Product product) || product.relations().size() < 2) {
-            return new Filter(optimizedInput, filter.condition(), filter.attributes());
-        }
-
-        var normalized = factorOutCommonJoinPredicates(filter.condition(), product);
-        var extraction = extractJoinPredicates(normalized, product);
-
-        var joinOptimizedProduct = extraction.joinPredicates().isEmpty()
-            ? product
-            : new Product(product.relations(), product.nodeId(), extraction.joinPredicates());
-
-        if (!allowLocalPredicatePushdown) {
-            if (extraction.remainingCondition().isEmpty()) {
-                return joinOptimizedProduct;
-            }
-            if (joinOptimizedProduct == optimizedInput
-                && extraction.remainingCondition().get().equals(filter.condition())) {
-                return new Filter(optimizedInput, filter.condition(), filter.attributes());
-            }
-            return new Filter(joinOptimizedProduct, extraction.remainingCondition().get(), filter.attributes());
-        }
-
-        var localExtraction = extraction.remainingCondition()
-            .map(condition -> extractLocalPredicates(condition, joinOptimizedProduct, reservedRelationAliases))
-            .orElseGet(() -> new LocalPredicateExtraction(joinOptimizedProduct.relations(), Optional.empty()));
-
-        var finalProduct = localExtraction.relations().equals(joinOptimizedProduct.relations())
-            ? joinOptimizedProduct
-            : new Product(localExtraction.relations(), joinOptimizedProduct.nodeId(), joinOptimizedProduct.joinPredicates());
-
-        if (localExtraction.remainingCondition().isEmpty()) {
-            return finalProduct;
-        }
-
-        if (finalProduct == optimizedInput && localExtraction.remainingCondition().get().equals(filter.condition())) {
-            return new Filter(optimizedInput, filter.condition(), filter.attributes());
-        }
-
-        return new Filter(finalProduct, localExtraction.remainingCondition().get(), filter.attributes());
-    }
-
-    /**
-     * For OR conditions where every branch shares common equi-join predicates,
-     * factor them out: OR(AND(J, A), AND(J, B)) → AND(J, OR(A, B))
-     */
-    private static Condition factorOutCommonJoinPredicates(Condition condition, Product product) {
-        List<Condition> topOperands = switch (condition) {
-            case Condition.And(var ops) -> ops;
-            default -> List.of(condition);
-        };
-
-        var factored = new ArrayList<Condition>();
-        boolean changed = false;
-
-        for (var operand : topOperands) {
-            if (operand instanceof Condition.Or(var orBranches) && orBranches.size() >= 2) {
-                var result = factorOrBranches(orBranches, product);
-                if (result.isPresent()) {
-                    factored.addAll(result.get());
-                    changed = true;
-                    continue;
-                }
-            }
-            factored.add(operand);
-        }
-
-        if (!changed) {
-            return condition;
-        }
-
-        return factored.size() == 1 ? factored.getFirst() : Condition.and(factored);
-    }
-
-    /**
-     * Given OR branches that are all ANDs, find equi-join predicates common to every branch,
-     * extract them, and return AND(common..., OR(remainders...)).
-     */
-    private static Optional<List<Condition>> factorOrBranches(
-        List<Condition> orBranches, Product product
-    ) {
-        var branchOperands = orBranches.stream()
-            .map(branch -> switch (branch) {
-                case Condition.And(var ops) -> ops;
-                default -> List.of(branch);
-            })
-            .toList();
-
-        // Find equi-join predicates present in the first branch
-        var firstBranchJoins = branchOperands.getFirst().stream()
-            .filter(c -> tryExtractJoinPredicate(c, product).isPresent())
-            .collect(Collectors.toSet());
-
-        if (firstBranchJoins.isEmpty()) {
-            return Optional.empty();
-        }
-
-        // Keep only those present in ALL branches
-        var commonJoins = firstBranchJoins.stream()
-            .filter(jp -> branchOperands.stream().skip(1).allMatch(branch -> branch.contains(jp)))
-            .toList();
-
-        if (commonJoins.isEmpty()) {
-            return Optional.empty();
-        }
-
-        var commonSet = Set.copyOf(commonJoins);
-
-        // Build reduced OR branches (each branch minus the common predicates)
-        var reducedBranches = branchOperands.stream()
-            .map(ops -> ops.stream().filter(c -> !commonSet.contains(c)).toList())
-            .map(ops -> switch (ops.size()) {
-                case 0 -> (Condition) new Condition.And(List.of());
-                case 1 -> ops.getFirst();
-                default -> Condition.and(ops);
-            })
-            .toList();
-
-        var result = new ArrayList<>(commonJoins);
-        result.add(Condition.or(reducedBranches));
-        return Optional.of(result);
-    }
-
-    private record ExtractionResult(
-        List<JoinPredicate> joinPredicates,
-        Optional<Condition> remainingCondition
-    ) {
-    }
-
-    private record LocalPredicateExtraction(
-        List<Relation> relations,
-        Optional<Condition> remainingCondition
-    ) {
-    }
-
-    private static ExtractionResult extractJoinPredicates(Condition condition, Product product) {
-        var joinPredicates = new ArrayList<JoinPredicate>();
-        var remaining = new ArrayList<Condition>();
-
-        List<Condition> operands = switch (condition) {
-            case Condition.And(var ops) -> ops;
-            default -> List.of(condition);
-        };
-
-        for (var operand : operands) {
-            tryExtractJoinPredicate(operand, product)
-                .map(joinPredicates::add)
-                .orElseGet(() -> remaining.add(operand));
-        }
-
-        Optional<Condition> remainingCondition = switch (remaining.size()) {
-            case 0 -> Optional.empty();
-            case 1 -> Optional.of(remaining.getFirst());
-            default -> Optional.of(Condition.and(remaining));
-        };
-
-        return new ExtractionResult(joinPredicates, remainingCondition);
-    }
-
-    private static LocalPredicateExtraction extractLocalPredicates(
-        Condition condition,
-        Product product,
-        Set<String> reservedRelationAliases
-    ) {
-        var perRelationConditions = new ArrayList<List<Condition>>();
-        for (int i = 0; i < product.relations().size(); i++) {
-            perRelationConditions.add(new ArrayList<>());
-        }
-
-        var remaining = new ArrayList<Condition>();
-        List<Condition> operands = switch (condition) {
-            case Condition.And(var ops) -> ops;
-            default -> List.of(condition);
-        };
-
-        for (var operand : operands) {
-            findSingleRelationIndex(operand, product)
-                .filter(relIndex -> product.relations().get(relIndex) instanceof Relation.Table)
-                .ifPresentOrElse(
-                    relIndex -> perRelationConditions.get(relIndex).add(operand),
-                    () -> {
-                        inferOrBranchLocalPredicates(operand, product).forEach(
-                            (relIndex, inferred) -> perRelationConditions.get(relIndex).add(inferred)
-                        );
-                        remaining.add(operand);
-                    }
-                );
-        }
-
-        var relations = new ArrayList<Relation>();
-        var changed = false;
-        for (int i = 0; i < product.relations().size(); i++) {
-            var relation = product.relations().get(i);
-            var localConditions = perRelationConditions.get(i);
-            if (localConditions.isEmpty()
-                || reservedRelationAliases.contains(relation.alias())) {
-                relations.add(relation);
-                continue;
-            }
-
-            changed = true;
-            relations.add(wrapRelationWithFilter(
-                relation,
-                localConditions.size() == 1 ? localConditions.getFirst() : Condition.and(localConditions),
-                derivedNodeId(product.nodeId(), i)
-            ));
-        }
-
-        if (!changed) {
-            return new LocalPredicateExtraction(product.relations(), Optional.of(condition));
-        }
-
-        Optional<Condition> remainingCondition = switch (remaining.size()) {
-            case 0 -> Optional.empty();
-            case 1 -> Optional.of(remaining.getFirst());
-            default -> Optional.of(Condition.and(remaining));
-        };
-        return new LocalPredicateExtraction(relations, remainingCondition);
-    }
-
-    private static java.util.Map<Integer, Condition> inferOrBranchLocalPredicates(Condition condition, Product product) {
-        if (!(condition instanceof Condition.Or(var branches))) {
-            return java.util.Map.of();
-        }
-
-        var branchOperands = branches.stream()
-            .map(branch -> switch (branch) {
-                case Condition.And(var ops) -> ops;
-                default -> List.of(branch);
-            })
-            .toList();
-
-        var inferred = new LinkedHashMap<Integer, Condition>();
-        for (int relIndex = 0; relIndex < product.relations().size(); relIndex++) {
-            var currentRelIndex = relIndex;
-            if (!(product.relations().get(relIndex) instanceof Relation.Table)) {
-                continue;
-            }
-
-            var branchLocalConditions = new ArrayList<Condition>();
-            var inferredForRelation = true;
-            for (var branch : branchOperands) {
-                var localOperands = branch.stream()
-                    .filter(operand -> findSingleRelationIndex(operand, product).equals(Optional.of(currentRelIndex)))
-                    .toList();
-                if (localOperands.isEmpty()) {
-                    inferredForRelation = false;
-                    break;
-                }
-                branchLocalConditions.add(localOperands.size() == 1
-                    ? localOperands.getFirst()
-                    : Condition.and(localOperands));
-            }
-
-            if (inferredForRelation) {
-                inferred.put(currentRelIndex, branchLocalConditions.size() == 1
-                    ? branchLocalConditions.getFirst()
-                    : Condition.or(branchLocalConditions));
-            }
-        }
-
-        return inferred;
-    }
-
-    private static Relation wrapRelationWithFilter(Relation relation, Condition condition, int nodeId) {
-        var relationProduct = new Product(List.of(relation), nodeId);
-        var filteredAttributes = relation.attributes().stream()
-            .map(attr -> relation.alias() + "_" + attr)
-            .toList();
-        var filtered = new Filter(relationProduct, condition, filteredAttributes);
-        var projection = new Return(
-            filtered,
-            relation.attributes().stream()
-                .map(attr -> Return.AttributeRef.attr(relation.alias() + "_" + attr, attr))
-                .toList(),
-            false
+    private static IRExpression.BinaryOp optimizeBinaryOp(IRExpression.BinaryOp binaryOp, Scope scope) {
+        return new IRExpression.BinaryOp(
+            optimizeExpression(binaryOp.left(), scope),
+            binaryOp.operator(),
+            optimizeExpression(binaryOp.right(), scope)
         );
-        return Relation.subquery(relation.alias(), projection, relation.attributes());
     }
 
-    private static int derivedNodeId(int productNodeId, int relationIndex) {
-        return 1_000_000 + (productNodeId * 100) + relationIndex;
+    private static IRExpression.Cast optimizeCast(IRExpression.Cast cast, Scope scope) {
+        return new IRExpression.Cast(
+            optimizeExpression(cast.expr(), scope),
+            cast.targetType()
+        );
     }
 
-    private static Optional<JoinPredicate> tryExtractJoinPredicate(
-        Condition condition, Product product
+    private static IRExpression.FunctionCall optimizeFunctionCall(IRExpression.FunctionCall functionCall, Scope scope) {
+        return new IRExpression.FunctionCall(
+            functionCall.name(),
+            functionCall.arguments().stream()
+                .map(argument -> optimizeExpression(argument, scope))
+                .toList()
+        );
+    }
+
+    private static IRExpression.CaseWhen optimizeCaseWhen(IRExpression.CaseWhen caseWhen, Scope scope) {
+        return new IRExpression.CaseWhen(
+            caseWhen.whens().stream()
+                .map(when -> new IRExpression.WhenClause(
+                    optimizeCondition(when.condition(), scope),
+                    optimizeExpression(when.result(), scope)
+                ))
+                .toList(),
+            caseWhen.elseExpr().map(expression -> optimizeExpression(expression, scope))
+        );
+    }
+
+    private static IRExpression.ScalarSubquery optimizeScalarSubquery(
+        IRExpression.ScalarSubquery scalarSubquery,
+        Scope scope
     ) {
-        if (!(condition instanceof Condition.Comparison(var left, var right, var operator))) {
-            return Optional.empty();
-        }
-        if (!"=".equals(operator)) {
-            return Optional.empty();
-        }
-        if (!(left instanceof IRExpression.ColumnRef(var leftCol))
-            || !(right instanceof IRExpression.ColumnRef(var rightCol))) {
-            return Optional.empty();
-        }
-
-        var leftRelInfo = findRelation(leftCol, product);
-        var rightRelInfo = findRelation(rightCol, product);
-
-        if (leftRelInfo.isEmpty() || rightRelInfo.isEmpty()) {
-            return Optional.empty();
-        }
-
-        var leftInfo = leftRelInfo.get();
-        var rightInfo = rightRelInfo.get();
-
-        if (leftInfo.relIndex() == rightInfo.relIndex()) {
-            return Optional.empty();
-        }
-
-        return Optional.of(new JoinPredicate(
-            leftInfo.relIndex(), leftInfo.rawAttr(),
-            rightInfo.relIndex(), rightInfo.rawAttr()
-        ));
+        return new IRExpression.ScalarSubquery(
+            scalarSubquery.subqueryPipeline().stream()
+                .map(node -> optimize(node, scope.disableLocalPushdown()))
+                .toList(),
+            scalarSubquery.correlations(),
+            scalarSubquery.valueAttribute()
+        );
     }
 
-    private static Optional<Integer> findSingleRelationIndex(Condition condition, Product product) {
-        return switch (condition) {
-            case Condition.Comparison(var left, var right, _) -> mergeRelationIndices(
-                findSingleRelationIndex(left, product),
-                findSingleRelationIndex(right, product)
-            );
-            case Condition.IsNull(var attrName, _) -> findRelation(attrName, product).map(RelInfo::relIndex);
-            case Condition.Like(var left, var pattern, _) -> mergeRelationIndices(
-                findSingleRelationIndex(left, product),
-                findSingleRelationIndex(pattern, product)
-            );
-            case Condition.And(var operands) -> mergeRelationIndices(
-                operands.stream().map(operand -> findSingleRelationIndex(operand, product)).toList()
-            );
-            case Condition.Or(var operands) -> mergeRelationIndices(
-                operands.stream().map(operand -> findSingleRelationIndex(operand, product)).toList()
-            );
-            case Condition.Not(var operand) -> findSingleRelationIndex(operand, product);
-            case Condition.Exists _ -> Optional.empty();
-            case Condition.InSubquery(var left, _, _) -> findSingleRelationIndex(left, product);
-        };
-    }
-
-    private static Optional<Integer> findSingleRelationIndex(IRExpression expression, Product product) {
-        return switch (expression) {
-            case IRExpression.ColumnRef(var columnName) -> findRelation(columnName, product).map(RelInfo::relIndex);
-            case IRExpression.Literal _ -> Optional.of(-1);
-            case IRExpression.BinaryOp(var left, _, var right) -> mergeRelationIndices(
-                findSingleRelationIndex(left, product),
-                findSingleRelationIndex(right, product)
-            );
-            case IRExpression.Cast(var expr, _) -> findSingleRelationIndex(expr, product);
-            case IRExpression.FunctionCall(_, var arguments) -> mergeRelationIndices(
-                arguments.stream().map(argument -> findSingleRelationIndex(argument, product)).toList()
-            );
-            case IRExpression.CaseWhen(var whens, var elseExpr) -> {
-                var relationIndices = new ArrayList<Optional<Integer>>();
-                whens.forEach(when -> {
-                    relationIndices.add(findSingleRelationIndex(when.condition(), product));
-                    relationIndices.add(findSingleRelationIndex(when.result(), product));
-                });
-                elseExpr.stream().forEach(expr -> relationIndices.add(findSingleRelationIndex(expr, product)));
-                yield mergeRelationIndices(relationIndices);
-            }
-            case IRExpression.ScalarSubquery _, IRExpression.Aggregate _ -> Optional.empty();
-        };
-    }
-
-    private static Optional<Integer> mergeRelationIndices(Optional<Integer> left, Optional<Integer> right) {
-        if (left.isEmpty() || right.isEmpty()) {
-            return Optional.empty();
+    private record Scope(
+        boolean allowLocalPredicatePushdown,
+        Set<String> reservedRelationAliases
+    ) {
+        static Scope root() {
+            return new Scope(true, Set.of());
         }
-        if (left.get() == -1) {
-            return right;
-        }
-        if (right.get() == -1) {
-            return left;
-        }
-        return left.equals(right) ? left : Optional.empty();
-    }
 
-    private static Optional<Integer> mergeRelationIndices(List<Optional<Integer>> relationIndices) {
-        Optional<Integer> current = Optional.of(-1);
-        for (var relationIndex : relationIndices) {
-            current = mergeRelationIndices(current, relationIndex);
-            if (current.isEmpty()) {
-                return Optional.empty();
-            }
+        Scope allowLocalPushdown() {
+            return new Scope(true, reservedRelationAliases);
         }
-        return current.filter(index -> index != -1);
-    }
 
-    private record RelInfo(int relIndex, String rawAttr) {
-    }
-
-    private static Optional<RelInfo> findRelation(String qualifiedAttr, Product product) {
-        var relations = product.relations();
-        for (int i = 0; i < relations.size(); i++) {
-            var rel = relations.get(i);
-            String prefix = rel.alias() + "_";
-            if (qualifiedAttr.startsWith(prefix)) {
-                String rawAttr = qualifiedAttr.substring(prefix.length());
-                if (rel.attributes().contains(rawAttr)) {
-                    return Optional.of(new RelInfo(i, rawAttr));
-                }
-            }
+        Scope disableLocalPushdown() {
+            return new Scope(false, reservedRelationAliases);
         }
-        return Optional.empty();
+
+        Scope withReservedAliases(List<Relation> relations) {
+            var aliases = new LinkedHashSet<>(reservedRelationAliases);
+            relations.stream()
+                .map(Relation::alias)
+                .forEach(aliases::add);
+            return new Scope(allowLocalPredicatePushdown, Set.copyOf(aliases));
+        }
     }
 }

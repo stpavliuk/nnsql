@@ -20,6 +20,18 @@ public record Product(
         joinPredicates = List.copyOf(joinPredicates);
     }
 
+    public Product withRelations(List<Relation> newRelations) {
+        return relations.equals(newRelations)
+            ? this
+            : new Product(newRelations, nodeId, joinPredicates);
+    }
+
+    public Product withJoinPredicates(List<JoinPredicate> newJoinPredicates) {
+        return joinPredicates.equals(newJoinPredicates)
+            ? this
+            : new Product(relations, nodeId, newJoinPredicates);
+    }
+
     @Override
     public String toString() {
         var relationNames = relations.stream()

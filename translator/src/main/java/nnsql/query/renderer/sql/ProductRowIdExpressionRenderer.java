@@ -5,6 +5,6 @@ import net.sf.jsqlparser.expression.Expression;
 import java.util.List;
 
 @FunctionalInterface
-interface ProductRowIdExpressionRenderer {
+public interface ProductRowIdExpressionRenderer {
     Expression render(List<Expression> relationIdExpressions, long nodeId);
 }

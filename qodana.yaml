@@ -9,3 +9,7 @@ projectJDK: 25
 failThreshold: 0
 profile:
     name: qodana.recommended
+include:
+    - name: DuplicatedCode
+exclude:
+    - name: SwitchStatementWithTooFewBranches

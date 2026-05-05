@@ -8,7 +8,6 @@ import net.sf.jsqlparser.statement.select.PlainSelect;
 
 import nnsql.query.ir.Product;
 import nnsql.query.ir.Relation;
-import nnsql.query.optim.JoinPredicate;
 import nnsql.query.renderer.RenderContext;
 
 import java.util.ArrayList;

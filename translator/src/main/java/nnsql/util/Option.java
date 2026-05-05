@@ -1,7 +1,9 @@
 package nnsql.util;
 
 import java.util.NoSuchElementException;
+import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -66,6 +68,20 @@ sealed public interface Option<T> {
             case Some<T>(var value) -> mapper.apply(value);
             case None<T> _ -> none();
         };
+    }
+
+    default Option<T> filter(Predicate<? super T> predicate) {
+        return switch (this) {
+            case Some<T>(var value) when predicate.test(value) -> this;
+            case Some<T> _, None<T> _ -> none();
+        };
+    }
+
+    default void ifPresentOrElse(Consumer<? super T> action, Runnable emptyAction) {
+        switch (this) {
+            case Some<T>(var value) -> action.accept(value);
+            case None<T> _ -> emptyAction.run();
+        }
     }
 
     default Option<T> or(Supplier<Option<T>> supplier) {

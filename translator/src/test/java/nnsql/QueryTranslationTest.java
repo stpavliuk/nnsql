@@ -760,6 +760,25 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testLiteralComparisonsAreRenderedNotEvaluated() {
+        var numericSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE 1 < 2"
+        ));
+        assertTrue(numericSql.contains("SELECT product_0_id.id FROM product_0_id WHERE (1.0 < 2.0)"));
+        assertFalse(numericSql.contains("WHERE TRUE"));
+
+        var stringSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE 'a' = 'a'"
+        ));
+        assertTrue(stringSql.contains("SELECT product_0_id.id FROM product_0_id WHERE ('a' = 'a')"));
+
+        var negatedSql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE NOT (1 < 2)"
+        ));
+        assertTrue(negatedSql.contains("SELECT product_0_id.id FROM product_0_id WHERE (NOT (1.0 < 2.0))"));
+    }
+
+    @Test
     void testArithmeticExpressionInGroupByReturn() {
         var sql = normalizeWhitespace(translator.translate(
             "SELECT R.A + R.B AS total, SUM(R.B) AS sum_b FROM R GROUP BY R.A, R.B"

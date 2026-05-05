@@ -158,6 +158,7 @@ Temporary Items
 .apdisk
 
 ### -- Misc
+.codex/state/
 .idea
 docs
 .vscode
@@ -165,3 +166,4 @@ docs
 
 tpch-tests/src/test/resources/data/
 data
+qodana.sarif.json

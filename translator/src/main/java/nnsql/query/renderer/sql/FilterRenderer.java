@@ -1,7 +1,5 @@
 package nnsql.query.renderer.sql;
 
-import net.sf.jsqlparser.statement.select.PlainSelect;
-
 import nnsql.query.ir.Filter;
 import nnsql.query.renderer.RenderContext;
 
