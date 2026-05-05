@@ -13,14 +13,12 @@ import nnsql.query.renderer.*;
 
 import java.util.IdentityHashMap;
 import java.util.List;
-import java.util.stream.Collectors;
 
 import static nnsql.query.renderer.sql.Sql.attrCTE;
 import static nnsql.query.renderer.sql.Sql.column;
 import static nnsql.query.renderer.sql.Sql.idTable;
 import static nnsql.query.renderer.sql.Sql.leftJoin;
 import static nnsql.query.renderer.sql.Sql.table;
-import static nnsql.query.renderer.sql.Sql.withSelect;
 
 public class SQLIRRenderer implements IRRenderer {
 
@@ -34,21 +32,21 @@ public class SQLIRRenderer implements IRRenderer {
     private IdentityHashMap<IRNode, String> activeSubqueryCache;
 
     public SQLIRRenderer() {
-        this(ProductRowIdExpressionRenderers.duckDbHash());
+        this(SqlDialect.duckDb());
     }
 
-    private SQLIRRenderer(ProductRowIdExpressionRenderer rowIdExpressionRenderer) {
-        var conditionRenderer = new ConditionRenderer(this::renderNodeForSubquery);
-        this.productRenderer = new ProductRenderer(rowIdExpressionRenderer);
+    private SQLIRRenderer(SqlDialect dialect) {
+        var conditionRenderer = new ConditionRenderer(this::renderNodeForSubquery, dialect);
+        this.productRenderer = new ProductRenderer(dialect.productRowIdExpressionRenderer());
         this.filterRenderer = new FilterRenderer(conditionRenderer);
-        this.groupRenderer = new GroupRenderer();
+        this.groupRenderer = new GroupRenderer(dialect);
         this.aggFilterRenderer = new AggFilterRenderer(conditionRenderer);
-        this.returnRenderer = new ReturnRenderer();
+        this.returnRenderer = new ReturnRenderer(dialect);
         this.duplElimRenderer = new DuplElimRenderer();
     }
 
     public static SQLIRRenderer postgresCompatible() {
-        return new SQLIRRenderer(ProductRowIdExpressionRenderers.postgresUuidMd5());
+        return new SQLIRRenderer(SqlDialect.postgres());
     }
 
     @Override
@@ -58,33 +56,7 @@ public class SQLIRRenderer implements IRRenderer {
         var lastBaseName = renderNode(ir, ctx);
         activeSubqueryCache = null;
         var finalSelect = buildFinalSelect(ir, lastBaseName);
-        var rootCTEs = findReferencedCTENames(finalSelect, ctx);
-
-        var usedCTEs = ctx.getUsedCTEs(rootCTEs);
-
-        if (usedCTEs.isEmpty()) {
-            return finalSelect;
-        }
-
-        var ctesStr = usedCTEs.stream()
-                              .map(CTE::format)
-                              .collect(Collectors.joining(",\n"));
-
-        return withSelect(ctesStr, finalSelect);
-    }
-
-    private java.util.Set<String> findReferencedCTENames(String finalSelect, RenderContext ctx) {
-        var allCTENames = ctx.getCTEs().stream()
-                             .map(CTE::name)
-                             .collect(Collectors.toSet());
-
-        var referenced = new java.util.HashSet<String>();
-        for (String cteName : allCTENames) {
-            if (finalSelect.contains(cteName)) {
-                referenced.add(cteName);
-            }
-        }
-        return referenced;
+        return SqlQueryDocument.from(ctx, finalSelect).toSql();
     }
 
     private String renderNodeForSubquery(IRNode node, RenderContext ctx) {
@@ -144,7 +116,7 @@ public class SQLIRRenderer implements IRRenderer {
         return baseName;
     }
 
-    private String buildFinalSelect(IRNode ir, String baseName) {
+    private PlainSelect buildFinalSelect(IRNode ir, String baseName) {
         var returnNode = findReturnNode(ir);
         var sortNode = findSortNode(ir);
 
@@ -153,7 +125,7 @@ public class SQLIRRenderer implements IRRenderer {
             : buildProjectionSelect(baseName, returnNode.selectedAttributes());
 
         applySortAndLimit(finalSelect, baseName, sortNode);
-        return finalSelect + ";";
+        return finalSelect;
     }
 
     private PlainSelect buildSelectStar(String baseName) {

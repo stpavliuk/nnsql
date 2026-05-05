@@ -16,10 +16,10 @@ import java.util.function.BiFunction;
 
 import static nnsql.query.renderer.sql.Sql.*;
 
-record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
+record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect dialect) {
 
-    ConditionRenderer(BiFunction<IRNode, RenderContext, String> subqueryRenderer) {
-        this(new ComparisonRenderer(subqueryRenderer));
+    ConditionRenderer(BiFunction<IRNode, RenderContext, String> subqueryRenderer, SqlDialect dialect) {
+        this(new ComparisonRenderer(subqueryRenderer, dialect), dialect);
     }
 
     java.util.Optional<PlainSelect> renderOptimizedFilterIdSelect(
@@ -511,9 +511,9 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer) {
         }
 
         var predicate = comparison(
-            ExpressionSqlRenderer.toSqlExpr(left, relationName),
+            ExpressionSqlRenderer.toSqlExpr(left, relationName, dialect),
             operator,
-            ExpressionSqlRenderer.toSqlExpr(right, relationName)
+            ExpressionSqlRenderer.toSqlExpr(right, relationName, dialect)
         );
         var requiredColumns = ExpressionSqlRenderer.collectColumns(left, right);
         return java.util.Optional.of(new InlinePredicate(sourceCondition, predicate, requiredColumns));

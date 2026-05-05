@@ -11,7 +11,6 @@ record FilterRenderer(ConditionRenderer conditionRenderer) {
 
     void render(Filter filter, RenderContext ctx, String baseName, String inputBaseName) {
         conditionRenderer.renderOptimizedFilterIdSelect(filter.condition(), inputBaseName, ctx)
-            .map(PlainSelect::toString)
             .ifPresentOrElse(
                 optimizedFilterId -> ctx.addCTE(idTable(baseName), optimizedFilterId),
                 () -> addFilterIdCTE(ctx, baseName, inputBaseName,

@@ -16,6 +16,7 @@ public final class TpchNullPreprocessor {
         .setHeader()
         .setSkipHeaderRecord(true)
         .get();
+
     private static final CSVFormat OUTPUT_CSV = CSVFormat.DEFAULT.builder()
         .setRecordSeparator(System.lineSeparator())
         .get();

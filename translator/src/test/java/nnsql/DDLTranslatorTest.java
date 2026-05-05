@@ -2,6 +2,7 @@ package nnsql;
 
 import nnsql.ddl.DDLTranslator;
 import nnsql.query.SchemaRegistry;
+import nnsql.query.renderer.sql.SqlDialect;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -28,5 +29,14 @@ class DDLTranslatorTest {
 
         assertTrue(sql.contains("id BIGINT PRIMARY KEY"));
         assertTrue(sql.contains("CREATE TABLE users_name"));
+    }
+
+    @Test
+    void postgresDialectUsesUuidForGeneratedIds() {
+        var translator = new DDLTranslator(new SchemaRegistry(), SqlDialect.postgres());
+
+        var sql = translator.translate("CREATE TABLE events (a INTEGER, b VARCHAR)");
+
+        assertTrue(sql.contains("id UUID PRIMARY KEY"));
     }
 }

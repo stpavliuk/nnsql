@@ -16,7 +16,7 @@ import java.util.function.BiFunction;
 
 import static nnsql.query.renderer.sql.Sql.*;
 
-record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRenderer) {
+record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRenderer, SqlDialect dialect) {
 
     record InlinedCorrelatedComparison(
         FromItem fromItem,
@@ -111,7 +111,7 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
 
         var predicates = new ArrayList<Expression>();
         predicates.add(Sql.comparison(
-            ExpressionSqlRenderer.toSqlExpr(comparison.left(), rel),
+            ExpressionSqlRenderer.toSqlExpr(comparison.left(), rel, dialect),
             comparison.operator(),
             column(alias, "subquery_value")
         ));
@@ -256,9 +256,9 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             || ExpressionSqlRenderer.containsCaseWhen(right);
 
         var comp = comparison(
-            ExpressionSqlRenderer.toSqlExpr(left, rel),
+            ExpressionSqlRenderer.toSqlExpr(left, rel, dialect),
             op,
-            ExpressionSqlRenderer.toSqlExpr(right, rel)
+            ExpressionSqlRenderer.toSqlExpr(right, rel, dialect)
         );
         if (negate) {
             comp = not(paren(comp));
@@ -275,7 +275,7 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
     ) {
         var columns = ExpressionSqlRenderer.collectColumns(leftExpr);
         var hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(leftExpr);
-        var predicate = inPredicate(ExpressionSqlRenderer.toSqlExpr(leftExpr, rel), subquery, negate);
+        var predicate = inPredicate(ExpressionSqlRenderer.toSqlExpr(leftExpr, rel, dialect), subquery, negate);
         return renderExistsForPredicate(rel, predicate, columns, hasCaseWhen);
     }
 
@@ -354,7 +354,7 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         innerValueExprs.put(valueAttribute, column(valueTable, "v"));
 
         var valueComparison = comparison(
-            ExpressionSqlRenderer.toSqlExpr(leftExpr, rel),
+            ExpressionSqlRenderer.toSqlExpr(leftExpr, rel, dialect),
             op,
             column(valueTable, "v")
         );

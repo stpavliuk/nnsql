@@ -5,13 +5,18 @@ import net.sf.jsqlparser.statement.create.table.CreateTable;
 import net.sf.jsqlparser.statement.create.table.ColumnDefinition;
 import nnsql.Translator;
 import nnsql.query.SchemaRegistry;
+import nnsql.query.renderer.sql.SqlDialect;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
-public record DDLTranslator(SchemaRegistry schemaRegistry) implements Translator {
+public record DDLTranslator(SchemaRegistry schemaRegistry, SqlDialect dialect) implements Translator {
+
+    public DDLTranslator(SchemaRegistry schemaRegistry) {
+        this(schemaRegistry, SqlDialect.duckDb());
+    }
 
     public String translate(String ddlScript) {
         try {
@@ -46,8 +51,8 @@ public record DDLTranslator(SchemaRegistry schemaRegistry) implements Translator
 
         var stmts = new ArrayList<String>();
         var idType = pkColumn
-                .map(pk -> columnTypes.getOrDefault(pk, Format.GENERATED_ID_TYPE))
-                .orElse(Format.GENERATED_ID_TYPE);
+                .map(pk -> columnTypes.getOrDefault(pk, dialect.generatedIdType()))
+                .orElse(dialect.generatedIdType());
 
         stmts.add(Format.idTable(tableName, idType));
         for (var col : columns) {

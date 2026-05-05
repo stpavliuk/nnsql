@@ -7,6 +7,7 @@ import net.sf.jsqlparser.schema.Column;
 import net.sf.jsqlparser.statement.insert.Insert;
 import nnsql.Translator;
 import nnsql.query.SchemaRegistry;
+import nnsql.query.renderer.sql.SqlDialect;
 
 import java.nio.charset.StandardCharsets;
 import java.math.BigInteger;
@@ -14,7 +15,11 @@ import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-public record DMLTranslator(SchemaRegistry schemaRegistry) implements Translator {
+public record DMLTranslator(SchemaRegistry schemaRegistry, SqlDialect dialect) implements Translator {
+
+    public DMLTranslator(SchemaRegistry schemaRegistry) {
+        this(schemaRegistry, SqlDialect.duckDb());
+    }
 
     public String translate(String dmlScript) {
         try {
@@ -24,6 +29,8 @@ public record DMLTranslator(SchemaRegistry schemaRegistry) implements Translator
                 .map(Insert.class::cast)
                 .map(this::translateInsert)
                 .collect(Collectors.joining("\n\n"));
+        } catch (RuntimeException e) {
+            throw e;
         } catch (Exception e) {
             throw new RuntimeException("Failed to parse DML: " + dmlScript, e);
         }
@@ -44,6 +51,11 @@ public record DMLTranslator(SchemaRegistry schemaRegistry) implements Translator
 
         var schema = schemaRegistry.getSchema(tableName);
         var primaryKeyColumns = schema.primaryKeyColumns();
+        if (primaryKeyColumns.size() > 1) {
+            throw new UnsupportedOperationException(
+                "Composite primary keys are not supported by generic DML translation yet"
+            );
+        }
 
         var valueRows = extractValueRows(insert);
 
@@ -129,18 +141,41 @@ public record DMLTranslator(SchemaRegistry schemaRegistry) implements Translator
                 .collect(Collectors.joining(","));
 
             var hashWithIndex = hashInput + "_row" + rowIndex;
-            return Format.generatedId(hashString(hashWithIndex));
+            return generatedIdLiteral(hashWithIndex);
         }
     }
 
-    private String hashString(String input) {
+    private String generatedIdLiteral(String input) {
+        var digest = md5(input);
+        if ("UUID".equalsIgnoreCase(dialect.generatedIdType())) {
+            return "'" + uuidString(digest) + "'";
+        }
+        return Format.generatedId(new BigInteger(1, digest).toString());
+    }
+
+    private byte[] md5(String input) {
         try {
             var md = java.security.MessageDigest.getInstance("MD5");
-            var digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
-            return new BigInteger(1, digest).toString();
+            return md.digest(input.getBytes(StandardCharsets.UTF_8));
         } catch (Exception e) {
             throw new RuntimeException("Error generating hash", e);
         }
+    }
+
+    private String uuidString(byte[] digest) {
+        var hex = new StringBuilder(digest.length * 2);
+        for (var b : digest) {
+            var unsigned = b & 0xFF;
+            hex.append(Character.forDigit((unsigned >>> 4) & 0xF, 16));
+            hex.append(Character.forDigit(unsigned & 0xF, 16));
+        }
+        return "%s-%s-%s-%s-%s".formatted(
+            hex.substring(0, 8),
+            hex.substring(8, 12),
+            hex.substring(12, 16),
+            hex.substring(16, 20),
+            hex.substring(20)
+        );
     }
 
     private Map<String, LiteralValue> buildRow(

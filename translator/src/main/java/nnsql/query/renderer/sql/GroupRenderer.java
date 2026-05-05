@@ -15,6 +15,11 @@ import java.util.List;
 import static nnsql.query.renderer.sql.Sql.*;
 
 class GroupRenderer {
+    private final SqlDialect dialect;
+
+    GroupRenderer(SqlDialect dialect) {
+        this.dialect = dialect;
+    }
 
     void render(Group group, RenderContext ctx, String baseName, String inputBaseName) {
         var groupedDataName = "grouped_" + baseName;
@@ -33,7 +38,7 @@ class GroupRenderer {
         var inputIdTbl = table(idTable(inputBaseName));
         var ps = new PlainSelect();
         ps.setFromItem(inputIdTbl);
-        ps.addSelectItem(fn("MIN", column(inputIdTbl, "id")), new Alias("id", true));
+        ps.addSelectItem(dialect.representativeId(column(inputIdTbl, "id")), new Alias("id", true));
 
         var requiredColumns = new LinkedHashSet<>(group.groupingAttributes());
         group.aggregates().stream()
@@ -59,13 +64,13 @@ class GroupRenderer {
         }
 
         for (var aggregate : group.aggregates()) {
-            var argumentExpr = ExpressionSqlRenderer.toSqlExpr(aggregate.argument(), inputBaseName);
+            var argumentExpr = ExpressionSqlRenderer.toSqlExpr(aggregate.argument(), inputBaseName, dialect);
             var aggregateFunction = fn(aggregate.function(), argumentExpr);
             aggregateFunction.setDistinct(aggregate.distinct());
             ps.addSelectItem(aggregateFunction, new Alias(aggregate.alias(), true));
         }
 
-        ctx.addCTE(groupedDataName, ps.toString());
+        ctx.addCTE(groupedDataName, ps);
     }
 
     private void addIdCTE(RenderContext ctx, String baseName, String groupedDataName) {
@@ -73,7 +78,7 @@ class GroupRenderer {
         var ps = new PlainSelect();
         ps.addSelectItem(column(groupedDataTbl, "id"));
         ps.setFromItem(groupedDataTbl);
-        ctx.addCTE(idTable(baseName), ps.toString());
+        ctx.addCTE(idTable(baseName), ps);
     }
 
     private void addGroupingAttributeCTEs(
@@ -94,7 +99,7 @@ class GroupRenderer {
                     column(groupedDataTbl, projection.presentAlias()),
                     new LongValue(1)
                 ));
-                ctx.addCTE(attrTable(baseName, groupingAttributes.get(index)), ps.toString());
+                ctx.addCTE(attrTable(baseName, groupingAttributes.get(index)), ps);
             });
     }
 
@@ -118,7 +123,7 @@ class GroupRenderer {
                 ps.setWhere(isNotNull);
             }
 
-            ctx.addCTE(attrTable(baseName, aggregate.alias()), ps.toString());
+            ctx.addCTE(attrTable(baseName, aggregate.alias()), ps);
         });
     }
 

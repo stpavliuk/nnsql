@@ -203,7 +203,7 @@ final class Sql {
         ps.addSelectItem(column(idTbl, "id"));
         ps.setFromItem(idTbl);
         ps.setWhere(where);
-        ctx.addCTE(idTable(baseName), ps.toString());
+        ctx.addCTE(idTable(baseName), ps);
     }
 
     static void addPassthroughAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
@@ -217,14 +217,8 @@ final class Sql {
             ps.setFromItem(inputAttrTbl);
             ps.addJoins(join(baseIdTbl,
                 new EqualsTo(column(baseIdTbl, "id"), column(inputAttrTbl, "id"))));
-            ctx.addCTE(naming.apply(baseName, attr), ps.toString());
+            ctx.addCTE(naming.apply(baseName, attr), ps);
         });
     }
 
-    static String withSelect(String ctes, String finalSelect) {
-        return """
-            WITH %s
-            %s
-            """.formatted(ctes, finalSelect);
-    }
 }

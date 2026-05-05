@@ -43,7 +43,7 @@ class DuplElimRenderer {
         ps.setFromItem(inputIdTbl);
         ps.setWhere(notExists(subquery));
 
-        ctx.addCTE(idTable(baseName), ps.toString());
+        ctx.addCTE(idTable(baseName), ps);
     }
 
     private Expression generateEqualityCondition(String relationName, String attr) {

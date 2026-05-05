@@ -3,7 +3,7 @@ SELECT nation,
        sum(amount) AS sum_profit
 FROM
   (SELECT n_name AS nation,
-          strftime('%Y', o_orderdate) AS o_year,
+          to_char(o_orderdate, 'YYYY') AS o_year,
           l_extendedprice * (1 - l_discount) - ps_supplycost * l_quantity AS amount
    FROM part,
         supplier,

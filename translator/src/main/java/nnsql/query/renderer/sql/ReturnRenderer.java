@@ -13,6 +13,11 @@ import java.util.List;
 import static nnsql.query.renderer.sql.Sql.*;
 
 class ReturnRenderer {
+    private final SqlDialect dialect;
+
+    ReturnRenderer(SqlDialect dialect) {
+        this.dialect = dialect;
+    }
 
     void render(Return returnNode, RenderContext ctx, String baseName, String inputBaseName) {
         addIdCTE(ctx, baseName, inputBaseName);
@@ -27,7 +32,7 @@ class ReturnRenderer {
         ps.addSelectItem(column("id"));
         ps.setFromItem(table(idTable(inputBaseName)));
 
-        ctx.addCTE(idTable(baseName), ps.toString());
+        ctx.addCTE(idTable(baseName), ps);
     }
 
     private void addAttributeCTEs(RenderContext ctx, String baseName, String inputBaseName,
@@ -49,7 +54,7 @@ class ReturnRenderer {
         ps.addSelectItem(column("v"));
         ps.setFromItem(table(attrTable(inputBaseName, attr.source().columnName())));
 
-        ctx.addCTE(attrCTE(baseName, attr.alias()), ps.toString());
+        ctx.addCTE(attrCTE(baseName, attr.alias()), ps);
     }
 
     private void addComputedExpressionCTE(RenderContext ctx, String baseName, String inputBaseName,
@@ -65,7 +70,7 @@ class ReturnRenderer {
         var ps = new PlainSelect();
         ps.addSelectItem(column(idTbl, "id"));
 
-        var exprSql = ExpressionSqlRenderer.toSqlExpr(attr.source(), inputBaseName);
+        var exprSql = ExpressionSqlRenderer.toSqlExpr(attr.source(), inputBaseName, dialect);
         ps.addSelectItem(exprSql, new Alias("v", true));
 
         ps.setFromItem(idTbl);
@@ -83,13 +88,13 @@ class ReturnRenderer {
         ps.setJoins(joins);
 
         if (hasCaseWhen) {
-            var whereExpr = ExpressionSqlRenderer.toSqlExpr(attr.source(), inputBaseName);
+            var whereExpr = ExpressionSqlRenderer.toSqlExpr(attr.source(), inputBaseName, dialect);
             var isNotNull = new IsNullExpression();
             isNotNull.setLeftExpression(whereExpr);
             isNotNull.setNot(true);
             ps.setWhere(isNotNull);
         }
 
-        ctx.addCTE(attrCTE(baseName, attr.alias()), ps.toString());
+        ctx.addCTE(attrCTE(baseName, attr.alias()), ps);
     }
 }

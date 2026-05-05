@@ -5,7 +5,7 @@ SELECT supp_nation,
 FROM
   (SELECT n1.n_name AS supp_nation,
           n2.n_name AS cust_nation,
-          strftime('%Y', l_shipdate) AS l_year,
+          to_char(l_shipdate, 'YYYY') AS l_year,
           l_extendedprice * (1 - l_discount) AS volume
    FROM supplier,
         lineitem,

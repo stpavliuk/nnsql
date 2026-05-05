@@ -72,9 +72,13 @@ final class ExpressionSqlRenderer {
     }
 
     static Expression toSqlCondition(Condition condition, String baseName) {
+        return toSqlCondition(condition, baseName, SqlDialect.duckDb());
+    }
+
+    static Expression toSqlCondition(Condition condition, String baseName, SqlDialect dialect) {
         return switch (condition) {
             case Condition.Comparison(var left, var right, var op) ->
-                comparison(toSqlExpr(left, baseName), op, toSqlExpr(right, baseName));
+                comparison(toSqlExpr(left, baseName, dialect), op, toSqlExpr(right, baseName, dialect));
             case Condition.IsNull(var attr, var negated) -> {
                 var isNull = new net.sf.jsqlparser.expression.operators.relational.IsNullExpression();
                 isNull.setLeftExpression(column(attrTable(baseName, attr), "v"));
@@ -82,17 +86,17 @@ final class ExpressionSqlRenderer {
                 yield isNull;
             }
             case Condition.Like(var left, var pattern, var negated) ->
-                like(toSqlExpr(left, baseName), toSqlExpr(pattern, baseName), negated);
+                like(toSqlExpr(left, baseName, dialect), toSqlExpr(pattern, baseName, dialect), negated);
             case Condition.Exists _, Condition.InSubquery _ ->
                 throw new UnsupportedOperationException(
                     "Subquery predicates are not supported in expression SQL rendering"
                 );
             case Condition.And(var operands) ->
-                andAll(operands.stream().map(cond -> paren(toSqlCondition(cond, baseName))).toList());
+                andAll(operands.stream().map(cond -> paren(toSqlCondition(cond, baseName, dialect))).toList());
             case Condition.Or(var operands) ->
-                orAll(operands.stream().map(cond -> paren(toSqlCondition(cond, baseName))).toList());
+                orAll(operands.stream().map(cond -> paren(toSqlCondition(cond, baseName, dialect))).toList());
             case Condition.Not(var operand) ->
-                not(paren(toSqlCondition(operand, baseName)));
+                not(paren(toSqlCondition(operand, baseName, dialect)));
         };
     }
 
@@ -109,30 +113,34 @@ final class ExpressionSqlRenderer {
     }
 
     static Expression toSqlExpr(IRExpression expr, String baseName) {
+        return toSqlExpr(expr, baseName, SqlDialect.duckDb());
+    }
+
+    static Expression toSqlExpr(IRExpression expr, String baseName, SqlDialect dialect) {
         return switch (expr) {
             case IRExpression.ColumnRef(var col) -> column(attrTable(baseName, col), "v");
             case IRExpression.Literal lit -> literal(lit);
-            case IRExpression.BinaryOp binaryOp -> renderBinaryOp(binaryOp, baseName);
+            case IRExpression.BinaryOp binaryOp -> renderBinaryOp(binaryOp, baseName, dialect);
             case IRExpression.Cast(var inner, var targetType) ->
-                new CastExpression("CAST", toSqlExpr(inner, baseName), targetType);
+                new CastExpression("CAST", toSqlExpr(inner, baseName, dialect), targetType);
             case IRExpression.FunctionCall(var name, var arguments) ->
-                fn(
+                dialect.renderFunction(
                     name,
-                    renderFunctionArguments(name, arguments, baseName).toArray(Expression[]::new)
+                    renderFunctionArguments(name, arguments, baseName, dialect)
                 );
             case IRExpression.CaseWhen(var whens, var elseExpr) -> {
                 var sqlCaseExpr = new CaseExpression();
                 var sqlWhens = whens.stream()
                     .map(when -> {
                         var sqlWhen = new net.sf.jsqlparser.expression.WhenClause();
-                        sqlWhen.setWhenExpression(toSqlCondition(when.condition(), baseName));
-                        sqlWhen.setThenExpression(toSqlExpr(when.result(), baseName));
+                        sqlWhen.setWhenExpression(toSqlCondition(when.condition(), baseName, dialect));
+                        sqlWhen.setThenExpression(toSqlExpr(when.result(), baseName, dialect));
                         return sqlWhen;
                     })
                     .toList();
                 sqlCaseExpr.setWhenClauses(sqlWhens);
                 elseExpr
-                    .map(elseValue -> toSqlExpr(elseValue, baseName))
+                    .map(elseValue -> toSqlExpr(elseValue, baseName, dialect))
                     .stream()
                     .forEach(sqlCaseExpr::setElseExpression);
                 yield sqlCaseExpr;
@@ -145,26 +153,28 @@ final class ExpressionSqlRenderer {
     private static List<Expression> renderFunctionArguments(
         String functionName,
         List<IRExpression> arguments,
-        String baseName
+        String baseName,
+        SqlDialect dialect
     ) {
         if (!isSubstringFunction(functionName)) {
             return arguments.stream()
-                .map(argument -> toSqlExpr(argument, baseName))
+                .map(argument -> toSqlExpr(argument, baseName, dialect))
                 .toList();
         }
 
         return java.util.stream.IntStream.range(0, arguments.size())
-            .mapToObj(index -> renderSubstringArgument(arguments.get(index), index, baseName))
+            .mapToObj(index -> renderSubstringArgument(arguments.get(index), index, baseName, dialect))
             .toList();
     }
 
     private static Expression renderSubstringArgument(
         IRExpression argument,
         int index,
-        String baseName
+        String baseName,
+        SqlDialect dialect
     ) {
         if (index == 0) {
-            return toSqlExpr(argument, baseName);
+            return toSqlExpr(argument, baseName, dialect);
         }
 
         return switch (argument) {
@@ -173,7 +183,7 @@ final class ExpressionSqlRenderer {
                     && value instanceof Number number
                     && isWholeNumber(number) ->
                 new LongValue(number.longValue());
-            default -> toSqlExpr(argument, baseName);
+            default -> toSqlExpr(argument, baseName, dialect);
         };
     }
 
@@ -194,9 +204,9 @@ final class ExpressionSqlRenderer {
         };
     }
 
-    private static Expression renderBinaryOp(IRExpression.BinaryOp binaryOp, String baseName) {
-        var left = toSqlExpr(binaryOp.left(), baseName);
-        var right = toSqlExpr(binaryOp.right(), baseName);
+    private static Expression renderBinaryOp(IRExpression.BinaryOp binaryOp, String baseName, SqlDialect dialect) {
+        var left = toSqlExpr(binaryOp.left(), baseName, dialect);
+        var right = toSqlExpr(binaryOp.right(), baseName, dialect);
 
         if (needsParentheses(binaryOp.operator(), binaryOp.left(), false)) {
             left = paren(left);

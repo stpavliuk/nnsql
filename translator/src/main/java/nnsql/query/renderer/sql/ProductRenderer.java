@@ -58,7 +58,7 @@ class ProductRenderer {
         var idSelect = new PlainSelect();
         idSelect.addSelectItem(column(idSource, "id"));
         idSelect.setFromItem(idSource);
-        ctx.addCTE(idTable(baseName), idSelect.toString());
+        ctx.addCTE(idTable(baseName), idSelect);
 
         switch (relation) {
             case Relation.Table(var tableName, var alias, var attrs) ->
@@ -88,7 +88,7 @@ class ProductRenderer {
         ps.addSelectItem(column(sourceAttrTbl, "id"));
         ps.addSelectItem(column(sourceAttrTbl, "v"));
         ps.setFromItem(sourceAttrTbl);
-        ctx.addCTE(attrTable(baseName, qualifiedAttr), ps.toString());
+        ctx.addCTE(attrTable(baseName, qualifiedAttr), ps);
     }
 
     private void addAllIdsCTE(
@@ -121,7 +121,7 @@ class ProductRenderer {
             ps.addJoins(simpleJoin(idTableFor(relations.get(i), subqueryBaseNames)));
         }
 
-        ctx.addCTE("all_ids_" + baseName, ps.toString());
+        ctx.addCTE("all_ids_" + baseName, ps);
     }
 
     private void addJoinProductCTE(
@@ -252,7 +252,7 @@ class ProductRenderer {
             ps.setWhere(andAll(extraConditions));
         }
 
-        ctx.addCTE("all_ids_" + baseName, ps.toString());
+        ctx.addCTE("all_ids_" + baseName, ps);
     }
 
     private String ensureJoinedAttributeAlias(
@@ -372,7 +372,7 @@ class ProductRenderer {
         ps.addSelectItem(column("id"));
         ps.setFromItem(table("all_ids_" + baseName));
 
-        ctx.addCTE(idTable(baseName), ps.toString());
+        ctx.addCTE(idTable(baseName), ps);
     }
 
     private void addAttributeCTEs(
@@ -433,6 +433,6 @@ class ProductRenderer {
             )
         ));
 
-        ctx.addCTE(attrTable(baseName, qualifiedAttr), ps.toString());
+        ctx.addCTE(attrTable(baseName, qualifiedAttr), ps);
     }
 }

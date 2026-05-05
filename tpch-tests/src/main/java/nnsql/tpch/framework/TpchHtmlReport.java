@@ -246,7 +246,7 @@ public final class TpchHtmlReport {
 
     private static TimingChartModel toTimingChartModel(List<QueryReportEntry> entries) {
         var maxDurationMs = entries.stream()
-            .flatMap(entry -> List.of(entry.sourceExecutionMs(), entry.translatedExecutionMs()).stream())
+            .flatMap(entry -> java.util.stream.Stream.of(entry.sourceExecutionMs(), entry.translatedExecutionMs()))
             .filter(duration -> duration != null && duration > 0.0d)
             .mapToDouble(Double::doubleValue)
             .max()

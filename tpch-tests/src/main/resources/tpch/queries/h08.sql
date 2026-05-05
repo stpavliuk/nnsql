@@ -4,7 +4,7 @@ SELECT o_year,
                ELSE 0
            END) / sum(volume) AS mkt_share
 FROM
-  (SELECT strftime('%Y', o_orderdate) AS o_year,
+  (SELECT to_char(o_orderdate, 'YYYY') AS o_year,
           l_extendedprice * (1 - l_discount) AS volume,
           n2.n_name AS nation
    FROM part,

@@ -2,6 +2,7 @@ package nnsql;
 
 import nnsql.dml.DMLTranslator;
 import nnsql.query.SchemaRegistry;
+import nnsql.query.renderer.sql.SqlDialect;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -12,6 +13,7 @@ import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DMLTranslatorTest {
@@ -55,5 +57,46 @@ class DMLTranslatorTest {
 
         assertTrue(sql.contains("INSERT INTO R__ID (id) VALUES (42)"));
         assertFalse(sql.contains("from_hex("));
+    }
+
+    @Test
+    void postgresDialectUsesUuidHashesForGeneratedIds() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable(
+            "R",
+            List.of("A", "B"),
+            Map.of("A", "INTEGER", "B", "VARCHAR"),
+            List.of()
+        );
+        var translator = new DMLTranslator(schemaRegistry, SqlDialect.postgres());
+
+        var sql = translator.translate("INSERT INTO R (A, B) VALUES (1, 'x')");
+
+        var matcher = Pattern.compile("VALUES \\('([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})'(?:\\)|,)").matcher(sql);
+        var hashes = new ArrayList<String>();
+        while (matcher.find()) {
+            hashes.add(matcher.group(1));
+        }
+        assertEquals(3, hashes.size());
+        assertEquals(1, new HashSet<>(hashes).size());
+    }
+
+    @Test
+    void rejectsCompositePrimaryKeysUntilGenericDmlSupportsThemExplicitly() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable(
+            "R",
+            List.of("A", "B"),
+            Map.of("A", "INTEGER", "B", "VARCHAR"),
+            List.of("A", "B")
+        );
+        var translator = new DMLTranslator(schemaRegistry);
+
+        var error = assertThrows(
+            UnsupportedOperationException.class,
+            () -> translator.translate("INSERT INTO R (A, B) VALUES (1, 'x')")
+        );
+
+        assertEquals("Composite primary keys are not supported by generic DML translation yet", error.getMessage());
     }
 }

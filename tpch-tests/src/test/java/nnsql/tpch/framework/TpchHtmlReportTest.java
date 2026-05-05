@@ -80,6 +80,50 @@ class TpchHtmlReportTest {
         }
     }
 
+    @Test
+    void generatedReportHandlesMissingTimingsForFailedQueries() throws IOException {
+        var reportPath = tempDir.resolve("tpch-report-null-timing.html");
+        var originalReportPath = System.getProperty("nnsql.tpch.reportPath");
+        var entries = reportEntries();
+        entries.clear();
+        System.setProperty("nnsql.tpch.reportPath", reportPath.toString());
+
+        try {
+            TpchHtmlReport.record(new TpchHtmlReport.QueryReportEntry(
+                "chart-test-failed",
+                false,
+                "select broken",
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                false,
+                "translation failed"
+            ));
+
+            var html = Files.readString(reportPath);
+
+            assertTrue(html.contains("chart-test-failed"));
+            assertTrue(html.contains("Original: n/a"));
+            assertTrue(html.contains("Translated: n/a"));
+            assertTrue(html.contains("translation failed"));
+            assertTrue(html.contains("No timing data"));
+        } finally {
+            entries.clear();
+            if (originalReportPath == null) {
+                System.clearProperty("nnsql.tpch.reportPath");
+            } else {
+                System.setProperty("nnsql.tpch.reportPath", originalReportPath);
+            }
+        }
+    }
+
+
     @SuppressWarnings("unchecked")
     private static List<TpchHtmlReport.QueryReportEntry> reportEntries() {
         try {

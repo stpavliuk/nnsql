@@ -9,7 +9,6 @@ record AggFilterRenderer(ConditionRenderer conditionRenderer) {
 
     void render(AggFilter aggFilter, RenderContext ctx, String baseName, String inputBaseName) {
         conditionRenderer.renderOptimizedFilterIdSelect(aggFilter.condition(), inputBaseName, ctx)
-            .map(net.sf.jsqlparser.statement.select.PlainSelect::toString)
             .ifPresentOrElse(
                 optimizedFilterId -> ctx.addCTE(idTable(baseName), optimizedFilterId),
                 () -> addFilterIdCTE(ctx, baseName, inputBaseName,
