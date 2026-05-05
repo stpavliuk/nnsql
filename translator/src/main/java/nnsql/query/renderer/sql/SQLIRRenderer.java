@@ -34,13 +34,21 @@ public class SQLIRRenderer implements IRRenderer {
     private IdentityHashMap<IRNode, String> activeSubqueryCache;
 
     public SQLIRRenderer() {
+        this(ProductRowIdExpressionRenderers.duckDbHash());
+    }
+
+    private SQLIRRenderer(ProductRowIdExpressionRenderer rowIdExpressionRenderer) {
         var conditionRenderer = new ConditionRenderer(this::renderNodeForSubquery);
-        this.productRenderer = new ProductRenderer();
+        this.productRenderer = new ProductRenderer(rowIdExpressionRenderer);
         this.filterRenderer = new FilterRenderer(conditionRenderer);
         this.groupRenderer = new GroupRenderer();
         this.aggFilterRenderer = new AggFilterRenderer(conditionRenderer);
         this.returnRenderer = new ReturnRenderer();
         this.duplElimRenderer = new DuplElimRenderer();
+    }
+
+    public static SQLIRRenderer postgresCompatible() {
+        return new SQLIRRenderer(ProductRowIdExpressionRenderers.postgresUuidMd5());
     }
 
     @Override

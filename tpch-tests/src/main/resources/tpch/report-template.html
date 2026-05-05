@@ -280,7 +280,7 @@
         try {
           if (sqlFormatterApi) {
             block.textContent = sqlFormatterApi.format(rawSql, {
-              language: "duckdb",
+              language: "postgresql",
               keywordCase: "upper",
               linesBetweenQueries: 1
             });

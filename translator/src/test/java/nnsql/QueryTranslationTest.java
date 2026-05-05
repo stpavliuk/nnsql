@@ -66,7 +66,7 @@ class QueryTranslationTest {
         assertTrue(equalityFilterSql.contains("product_0_R_A AS"));
         assertTrue(equalityFilterSql.contains("product_0_R_B AS"));
         assertTrue(equalityFilterSql.contains(
-            "filter_1_id AS ( SELECT product_0_id.id FROM product_0_id, product_0_R_B WHERE product_0_R_B.id = product_0_id.id AND product_0_R_B.v = 5.0 )"
+            "filter_1_id AS ( SELECT product_0_id.id FROM product_0_id JOIN product_0_R_B ON product_0_R_B.id = product_0_id.id WHERE (product_0_R_B.v = 5.0) )"
         ));
         assertTrue(equalityFilterSql.contains("return_2_attr_R_A"));
 
@@ -89,8 +89,8 @@ class QueryTranslationTest {
                 ),
                 product_0_R_A AS (
                     SELECT all_ids_product_0.id, R_A.v
-                    FROM all_ids_product_0, R_A
-                    WHERE all_ids_product_0.id1 = R_A.id
+                    FROM all_ids_product_0
+                    JOIN R_A ON all_ids_product_0.id1 = R_A.id
                 ),
                 return_1_id AS (
                     SELECT id FROM product_0_id
@@ -132,13 +132,13 @@ class QueryTranslationTest {
                 ),
                 product_0_R_A AS (
                     SELECT all_ids_product_0.id, R_A.v
-                    FROM all_ids_product_0, R_A
-                    WHERE all_ids_product_0.id1 = R_A.id
+                    FROM all_ids_product_0
+                    JOIN R_A ON all_ids_product_0.id1 = R_A.id
                 ),
                 product_0_S_C AS (
                     SELECT all_ids_product_0.id, S_C.v
-                    FROM all_ids_product_0, S_C
-                    WHERE all_ids_product_0.id2 = S_C.id
+                    FROM all_ids_product_0
+                    JOIN S_C ON all_ids_product_0.id2 = S_C.id
                 ),
                 grouped_group_1 AS (
                     SELECT MIN(product_0_id.id) AS id,
@@ -193,7 +193,7 @@ class QueryTranslationTest {
         assertTrue(columnComparisonSql.contains("product_0_R_A AS"));
         assertTrue(columnComparisonSql.contains("product_0_R_B AS"));
         assertTrue(columnComparisonSql.contains(
-            "filter_1_id AS ( SELECT product_0_id.id FROM product_0_id, product_0_R_A, product_0_R_B WHERE product_0_R_A.id = product_0_id.id AND product_0_R_B.id = product_0_id.id AND product_0_R_A.v > product_0_R_B.v )"
+            "filter_1_id AS ( SELECT product_0_id.id FROM product_0_id JOIN product_0_R_A ON product_0_R_A.id = product_0_id.id JOIN product_0_R_B ON product_0_R_B.id = product_0_id.id WHERE (product_0_R_A.v > product_0_R_B.v) )"
         ));
         assertTrue(columnComparisonSql.contains("return_2_attr_R_A"));
     }
@@ -212,7 +212,7 @@ class QueryTranslationTest {
         ));
         assertTrue(notBetweenSql.contains("product_0_R_B.v < 10.0"));
         assertTrue(notBetweenSql.contains("product_0_R_B.v > 20.0"));
-        assertTrue(notBetweenSql.contains("EXISTS (SELECT * FROM product_0_R_B"));
+        assertFalse(notBetweenSql.contains("EXISTS (SELECT * FROM product_0_R_B"));
 
         var columnBetweenSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.A BETWEEN R.B AND R.B"
@@ -381,8 +381,8 @@ class QueryTranslationTest {
             "SELECT R.A FROM R, S WHERE R.B = S.B AND S.C = (SELECT MIN(T.D) FROM T WHERE T.E = R.A)"
         ));
 
-        assertTrue(sql.contains("corr_subquery.subquery_value"));
-        assertTrue(sql.contains("corr_subquery"));
+        assertTrue(sql.contains("corr_subquery_value"));
+        assertTrue(sql.contains("corr_subquery_attr_1"));
     }
 
     @Test
@@ -391,8 +391,8 @@ class QueryTranslationTest {
             "SELECT R.A FROM R WHERE R.A = (SELECT MIN(S.C) FROM S, T WHERE S.B = T.D AND T.E = R.B)"
         ));
 
-        assertTrue(sql.contains("corr_subquery.subquery_value"));
-        assertTrue(sql.contains("corr_subquery"));
+        assertTrue(sql.contains("corr_subquery_value"));
+        assertTrue(sql.contains("corr_subquery_attr_1"));
     }
 
     @Test
@@ -434,8 +434,8 @@ class QueryTranslationTest {
             "SELECT R.A FROM R, S WHERE R.B = S.B AND R.A > 10 AND S.C < 5"
         ));
 
-        assertTrue(sql.contains("R__ID AS ( SELECT id FROM return_"));
-        assertTrue(sql.contains("S__ID AS ( SELECT id FROM return_"));
+        assertTrue(sql.contains("return_3_id AS R__ID"));
+        assertTrue(sql.contains("return_6_id AS S__ID"));
         assertFalse(sql.contains("product_0_R_A.v > 10.0"));
         assertFalse(sql.contains("product_0_S_C.v < 5.0"));
     }
@@ -446,8 +446,8 @@ class QueryTranslationTest {
             "SELECT R.A FROM R, S WHERE R.B = S.B AND S.C IN (SELECT T.D FROM T WHERE T.E > 0)"
         ));
 
-        assertTrue(sql.contains("S__ID AS ( SELECT id FROM return_"));
-        assertFalse(sql.contains("product_0_S_C.v IN (SELECT v FROM return_"));
+        assertTrue(sql.contains("return_6_id AS S__ID"));
+        assertTrue(sql.contains("product_1_S_C.v IN (SELECT v FROM return_5_attr_T_D)"));
         assertTrue(sql.contains("T_E.v > 0.0"));
     }
 
@@ -466,8 +466,8 @@ class QueryTranslationTest {
             "SELECT R.A FROM R, S WHERE (R.A > 10 AND S.C = 1) OR (R.A > 20 AND S.C = 2)"
         ));
 
-        assertTrue(sql.contains("R__ID AS ( SELECT id FROM return_"));
-        assertTrue(sql.contains("S__ID AS ( SELECT id FROM return_"));
+        assertTrue(sql.contains("return_3_id AS R__ID"));
+        assertTrue(sql.contains("return_6_id AS S__ID"));
         assertTrue(sql.contains("product_0_R_A.v > 10.0") || sql.contains("product_0_R_A.v > 20.0"));
     }
 
@@ -495,7 +495,7 @@ class QueryTranslationTest {
                 """
         ));
 
-        assertTrue(sql.contains("part__ID AS ( SELECT id FROM return_"));
+        assertTrue(sql.contains("filter_3_part_p_partkey"));
         assertTrue(sql.contains("LIKE 'Brand%'"));
     }
 
@@ -521,7 +521,7 @@ class QueryTranslationTest {
         ));
         assertTrue(simpleTpchSql.contains("product_0_customer_c_acctbal"));
         assertTrue(simpleTpchSql.contains(
-            "filter_1_id AS ( SELECT product_0_id.id FROM product_0_id, product_0_customer_c_acctbal WHERE product_0_customer_c_acctbal.id = product_0_id.id AND product_0_customer_c_acctbal.v > 5000.0 )"
+            "filter_1_id AS ( SELECT product_0_id.id FROM product_0_id JOIN product_0_customer_c_acctbal ON product_0_customer_c_acctbal.id = product_0_id.id WHERE (product_0_customer_c_acctbal.v > 5000.0) )"
         ));
         assertTrue(simpleTpchSql.endsWith("SELECT * FROM return_2_id;"));
 
@@ -535,7 +535,7 @@ class QueryTranslationTest {
                 """
         ));
         assertTrue(groupedTpchSql.contains(
-            "filter_3_id AS ( SELECT product_2_id.id FROM product_2_id, product_2_customer_c_acctbal, product_2_customer_c_nationkey WHERE product_2_customer_c_acctbal.id = product_2_id.id AND product_2_customer_c_nationkey.id = product_2_id.id AND product_2_customer_c_acctbal.v > 0.0 AND product_2_customer_c_nationkey.v = 15.0 )"
+            "filter_3_id AS ( SELECT product_2_id.id FROM product_2_id JOIN product_2_customer_c_acctbal ON product_2_customer_c_acctbal.id = product_2_id.id JOIN product_2_customer_c_nationkey ON product_2_customer_c_nationkey.id = product_2_id.id WHERE ((product_2_customer_c_acctbal.v > 0.0) AND (product_2_customer_c_nationkey.v = 15.0)) )"
         ));
         assertTrue(groupedTpchSql.contains("return_5_attr_avg_accball"));
         assertTrue(groupedTpchSql.contains("product_0_customer_c_acctbal.v > (SELECT v FROM return_5_attr_avg_accball)"));
@@ -550,10 +550,10 @@ class QueryTranslationTest {
         ));
         assertTrue(sql.contains("ctr__ID"));
         assertTrue(sql.contains(
-            "filter_2_id AS ( SELECT product_1_id.id FROM product_1_id, product_1_R_B WHERE product_1_R_B.id = product_1_id.id AND product_1_R_B.v > 5.0 )"
+            "filter_2_id AS ( SELECT product_1_id.id FROM product_1_id JOIN product_1_R_B ON product_1_R_B.id = product_1_id.id WHERE (product_1_R_B.v > 5.0) )"
         ));
         assertTrue(sql.contains(
-            "filter_4_id AS ( SELECT product_0_id.id FROM product_0_id, product_0_ctr_B WHERE product_0_ctr_B.id = product_0_id.id AND product_0_ctr_B.v = 10.0 )"
+            "filter_4_id AS ( SELECT product_0_id.id FROM product_0_id JOIN product_0_ctr_B ON product_0_ctr_B.id = product_0_id.id WHERE (product_0_ctr_B.v = 10.0) )"
         ));
         assertTrue(sql.contains("return_5_attr_A"));
     }
@@ -904,6 +904,23 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererUsesUuidCompositeIds() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("R", List.of("A", "B"));
+        schemaRegistry.registerTable("S", List.of("B", "C"));
+
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            "SELECT DISTINCT R.A FROM R, S WHERE R.B = S.B"
+        ));
+
+        assertTrue(sql.contains(
+            "CAST(md5(concat_ws('|', CAST(R__ID.id AS TEXT), CAST(S__ID.id AS TEXT), '0')) AS UUID) AS id"
+        ));
+        assertFalse(sql.contains("hash("));
+    }
+
+    @Test
     void testUnsupportedOrderByExpressions() {
         assertThrows(UnsupportedOperationException.class, () ->
             translator.translate("SELECT R.A FROM R ORDER BY R.A + R.B"));
@@ -921,10 +938,10 @@ class QueryTranslationTest {
         assertTrue(sql.contains("c1__ID"));
         assertTrue(sql.contains("c2__ID"));
         assertTrue(sql.contains(
-            "filter_3_id AS ( SELECT product_2_id.id FROM product_2_id, product_2_R_B WHERE product_2_R_B.id = product_2_id.id AND product_2_R_B.v > 5.0 )"
+            "filter_3_id AS ( SELECT product_2_id.id FROM product_2_id JOIN product_2_R_B ON product_2_R_B.id = product_2_id.id WHERE (product_2_R_B.v > 5.0) )"
         ));
         assertTrue(sql.contains(
-            "filter_5_id AS ( SELECT product_1_id.id FROM product_1_id, product_1_c1_B WHERE product_1_c1_B.id = product_1_id.id AND product_1_c1_B.v = 10.0 )"
+            "filter_5_id AS ( SELECT product_1_id.id FROM product_1_id JOIN product_1_c1_B ON product_1_c1_B.id = product_1_id.id WHERE (product_1_c1_B.v = 10.0) )"
         ));
         assertTrue(sql.contains("return_7_attr_A"));
     }

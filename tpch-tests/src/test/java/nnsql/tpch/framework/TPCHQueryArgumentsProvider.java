@@ -11,7 +11,7 @@ import java.util.stream.Stream;
 
 public class TPCHQueryArgumentsProvider
     implements ArgumentsProvider, AnnotationConsumer<TPCHQueryTest> {
-    private static final String RESOURCE_ROOT = "tpch/sqlite_tpc/";
+    private static final String RESOURCE_ROOT = "tpch/queries/";
 
     private String fileName;
 

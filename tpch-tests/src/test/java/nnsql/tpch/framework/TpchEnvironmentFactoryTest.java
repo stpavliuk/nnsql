@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-class TranslatedDbExtensionTest {
+class TpchEnvironmentFactoryTest {
 
     @Test
     void refreshOptimizerStatisticsExecutesAnalyze() throws Exception {
@@ -21,7 +21,7 @@ class TranslatedDbExtensionTest {
         var statement = statementProxy(executedSql, statementClosed);
         var connection = connectionProxy(statement);
 
-        TranslatedDbExtension.refreshOptimizerStatistics(connection);
+        TpchEnvironmentFactory.refreshOptimizerStatistics(connection);
 
         assertEquals(List.of("ANALYZE"), executedSql);
         assertTrue(statementClosed.get());

@@ -14,12 +14,12 @@ java {
 }
 
 dependencies {
-    testImplementation project(':translator')
+    implementation project(':translator')
 
-    testImplementation 'org.duckdb:duckdb_jdbc:1.4.2.0'
-    testImplementation 'org.apache.commons:commons-csv:1.14.1'
-    testImplementation 'com.github.jsqlparser:jsqlparser:5.3'
-    testImplementation 'com.github.jknack:handlebars:4.3.1'
+    implementation 'org.postgresql:postgresql:42.7.5'
+    implementation 'org.apache.commons:commons-csv:1.14.1'
+    implementation 'com.github.jsqlparser:jsqlparser:5.3'
+    implementation 'com.github.jknack:handlebars:4.3.1'
     testImplementation platform('org.junit:junit-bom:5.10.0')
     testImplementation 'org.junit.jupiter:junit-jupiter:5.12.1'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -27,9 +27,6 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
-    if (project.hasProperty('tpchDbDir')) {
-        systemProperty 'nnsql.tpch.dbDir', project.property('tpchDbDir')
-    }
     if (System.getProperty('nnsql.tpch.scaleFactor')) {
         systemProperty 'nnsql.tpch.scaleFactor', System.getProperty('nnsql.tpch.scaleFactor')
     }
@@ -44,6 +41,15 @@ tasks.named('test') {
     }
     if (System.getProperty('nnsql.tpch.timingWarmupRuns')) {
         systemProperty 'nnsql.tpch.timingWarmupRuns', System.getProperty('nnsql.tpch.timingWarmupRuns')
+    }
+    if (System.getProperty('nnsql.tpch.jdbcUrl')) {
+        systemProperty 'nnsql.tpch.jdbcUrl', System.getProperty('nnsql.tpch.jdbcUrl')
+    }
+    if (System.getProperty('nnsql.tpch.jdbcUser')) {
+        systemProperty 'nnsql.tpch.jdbcUser', System.getProperty('nnsql.tpch.jdbcUser')
+    }
+    if (System.getProperty('nnsql.tpch.jdbcPassword')) {
+        systemProperty 'nnsql.tpch.jdbcPassword', System.getProperty('nnsql.tpch.jdbcPassword')
     }
 }
 

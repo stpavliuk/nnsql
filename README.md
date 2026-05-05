@@ -73,6 +73,17 @@ Run the TPCH integration suite:
 ./gradlew :tpch-tests:tpchTest
 ```
 
+The TPCH suite now runs against Postgres. By default it derives the connection
+from `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` and connects to
+`jdbc:postgresql://localhost:5432/$POSTGRES_DB`. You can override that with:
+
+```bash
+./gradlew :tpch-tests:tpchTest \
+  -Dnnsql.tpch.jdbcUrl=jdbc:postgresql://localhost:5432/postgres \
+  -Dnnsql.tpch.jdbcUser=postgres \
+  -Dnnsql.tpch.jdbcPassword=postgres
+```
+
 Run a specific subset of TPCH queries:
 ```bash
 ./gradlew :tpch-tests:tpchTest -Dnnsql.tpch.queries=1,3-5
@@ -89,7 +100,9 @@ Useful TPCH test properties:
 - `-Dnnsql.tpch.nullRate=<rate>` controls the null injection rate for the translated 6NF target.
 - `-Dnnsql.tpch.timingRuns=<n>` sets how many measured executions are averaged per query.
 - `-Dnnsql.tpch.timingWarmupRuns=<n>` sets how many warmup executions run before timing.
-- `-PtpchDbDir=<path>` overrides the cache directory for the generated DuckDB databases.
+- `-Dnnsql.tpch.jdbcUrl=<jdbc-url>` overrides the Postgres JDBC URL.
+- `-Dnnsql.tpch.jdbcUser=<user>` overrides the Postgres JDBC user.
+- `-Dnnsql.tpch.jdbcPassword=<password>` overrides the Postgres JDBC password.
 - `-Dnnsql.tpch.reportPath=<path>` overrides the HTML report output path.
 
 By default, the TPCH HTML report is written to

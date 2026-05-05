@@ -1,31 +1,24 @@
 package nnsql.tpch.framework;
 
-import nnsql.data.DataTranslator;
-import nnsql.ddl.DDLTranslator;
-import nnsql.query.QueryTranslator;
-import nnsql.query.SchemaRegistry;
-import nnsql.query.renderer.sql.SQLIRRenderer;
 import org.junit.jupiter.api.Assumptions;
-import org.junit.jupiter.api.extension.*;
-
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.util.Comparator;
+import org.junit.jupiter.api.extension.AfterAllCallback;
+import org.junit.jupiter.api.extension.BeforeAllCallback;
+import org.junit.jupiter.api.extension.ExtensionContext;
+import org.junit.jupiter.api.extension.ParameterContext;
+import org.junit.jupiter.api.extension.ParameterResolver;
 
 public class TranslatedDbExtension implements BeforeAllCallback, AfterAllCallback, ParameterResolver {
 
     static final String DEFAULT_SCALE_FACTOR = "1";
     static final double DEFAULT_NULL_RATE = 0.7d;
 
-    private static final String DB_DIR_PROPERTY = "nnsql.tpch.dbDir";
     private static final String NULL_RATE_PROPERTY = "nnsql.tpch.nullRate";
     private static final String SCALE_FACTOR_PROPERTY = "nnsql.tpch.scaleFactor";
-    private static final String SOURCE_DB_FILE = "source.duckdb";
-    private static final String TARGET_DB_FILE = "target.duckdb";
+    private static final String JDBC_URL_PROPERTY = "nnsql.tpch.jdbcUrl";
+    private static final String JDBC_USER_PROPERTY = "nnsql.tpch.jdbcUser";
+    private static final String JDBC_PASSWORD_PROPERTY = "nnsql.tpch.jdbcPassword";
+    private static final String SOURCE_SCHEMA_PREFIX = "tpch_src_";
+    private static final String TARGET_SCHEMA_PREFIX = "tpch_tgt_";
     private static final ExtensionContext.Namespace NS =
         ExtensionContext.Namespace.create(TranslatedDbExtension.class);
 
@@ -35,12 +28,19 @@ public class TranslatedDbExtension implements BeforeAllCallback, AfterAllCallbac
         var scaleFactor = resolveScaleFactor();
         var nullRate = resolveNullRate();
         var fixtureSet = TpchFixtureSet.load(scaleFactor);
-        var cacheDir = resolveDbDirectory().resolve(TpchFixtureSet.cacheKey(nullRate, fixtureSet));
-        Files.createDirectories(cacheDir);
+        var cacheKey = TpchFixtureSet.cacheKey(nullRate, fixtureSet);
+        var sourceSchema = SOURCE_SCHEMA_PREFIX + cacheKey;
+        var targetSchema = TARGET_SCHEMA_PREFIX + cacheKey;
+        var config = resolveConnectionConfig();
 
-        var sourceDbPath = cacheDir.resolve(SOURCE_DB_FILE);
-        var targetDbPath = cacheDir.resolve(TARGET_DB_FILE);
-        var env = openOrBuildEnvironment(sourceDbPath, targetDbPath, cacheDir, fixtureSet, nullRate, provider);
+        var env = TpchEnvironmentFactory.openOrBuildEnvironment(
+            config,
+            sourceSchema,
+            targetSchema,
+            fixtureSet,
+            nullRate,
+            provider
+        );
         ctx.getStore(NS).put("env", env);
     }
 
@@ -60,221 +60,6 @@ public class TranslatedDbExtension implements BeforeAllCallback, AfterAllCallbac
     @Override
     public Object resolveParameter(ParameterContext pc, ExtensionContext ec) {
         return ec.getStore(NS).get("env", TranslatedDbEnvironment.class);
-    }
-
-    private static TranslatedDbEnvironment openOrBuildEnvironment(
-        Path sourceDbPath,
-        Path targetDbPath,
-        Path cacheDir,
-        TpchFixtureSet fixtureSet,
-        double nullRate,
-        TpchDataProvider provider
-    ) throws Exception {
-        if (Files.exists(sourceDbPath) && Files.exists(targetDbPath)) {
-            try {
-                return buildCachedEnvironment(sourceDbPath, targetDbPath, cacheDir, fixtureSet, provider);
-            } catch (Exception e) {
-                System.err.println("Rebuilding cached TPC-H databases after open failure: " + e.getMessage());
-                deleteDirectoryContents(cacheDir);
-            }
-        }
-        return buildGeneratedEnvironment(sourceDbPath, targetDbPath, cacheDir, fixtureSet, nullRate, provider);
-    }
-
-    private static TranslatedDbEnvironment buildCachedEnvironment(
-        Path sourceDbPath,
-        Path targetDbPath,
-        Path cacheDir,
-        TpchFixtureSet fixtureSet,
-        TpchDataProvider provider
-    ) throws Exception {
-        System.out.println("Reusing cached TPC-H databases in " + cacheDir);
-        Connection sourceConn = null;
-        Connection targetConn = null;
-
-        try {
-            sourceConn = DriverManager.getConnection(duckDbJdbcUrl(sourceDbPath));
-            targetConn = DriverManager.getConnection(duckDbJdbcUrl(targetDbPath));
-            var schemaRegistry = buildSchemaRegistry(fixtureSet);
-            refreshOptimizerStatistics(sourceConn);
-            refreshOptimizerStatistics(targetConn);
-            return buildEnvironment(sourceConn, targetConn, schemaRegistry, provider, cacheDir);
-        } catch (Exception e) {
-            closeQuietly(sourceConn);
-            closeQuietly(targetConn);
-            throw e;
-        }
-    }
-
-    private static TranslatedDbEnvironment buildGeneratedEnvironment(
-        Path sourceDbPath,
-        Path targetDbPath,
-        Path cacheDir,
-        TpchFixtureSet fixtureSet,
-        double nullRate,
-        TpchDataProvider provider
-    ) throws Exception {
-        System.out.println("Building TPC-H databases in " + cacheDir);
-        Files.createDirectories(cacheDir);
-        deleteDatabaseArtifacts(sourceDbPath);
-        deleteDatabaseArtifacts(targetDbPath);
-
-        var workDir = cacheDir.resolve("work");
-        deleteDirectoryContents(workDir);
-        Files.createDirectories(workDir);
-
-        Connection sourceConn = null;
-        Connection targetConn = null;
-
-        try {
-            var stagedCsvDir = TpchNullPreprocessor.stageFixtures(fixtureSet, nullRate, workDir.resolve("staged"));
-            sourceConn = DriverManager.getConnection(duckDbJdbcUrl(sourceDbPath));
-            initializeSourceDatabase(sourceConn, fixtureSet, stagedCsvDir);
-
-            var schemaRegistry = buildSchemaRegistry(fixtureSet);
-            targetConn = DriverManager.getConnection(duckDbJdbcUrl(targetDbPath));
-            initializeTranslatedTarget(targetConn, schemaRegistry, fixtureSet, stagedCsvDir, workDir.resolve("translated"));
-
-            refreshOptimizerStatistics(sourceConn);
-            refreshOptimizerStatistics(targetConn);
-            return buildEnvironment(sourceConn, targetConn, schemaRegistry, provider, cacheDir);
-        } catch (Exception e) {
-            closeQuietly(sourceConn);
-            closeQuietly(targetConn);
-            throw e;
-        } finally {
-            deleteDirectoryContents(workDir);
-        }
-    }
-
-    private static void initializeSourceDatabase(
-        Connection sourceConn,
-        TpchFixtureSet fixtureSet,
-        Path stagedCsvDir
-    ) throws Exception {
-        executeSqlScript(sourceConn, readUtf8(fixtureSet.schemaPath()));
-        for (var tableName : fixtureSet.tables()) {
-            importCsv(sourceConn, tableName, stagedCsvDir.resolve(tableName + ".csv"));
-        }
-    }
-
-    private static void initializeTranslatedTarget(
-        Connection targetConn,
-        SchemaRegistry schemaRegistry,
-        TpchFixtureSet fixtureSet,
-        Path stagedCsvDir,
-        Path translatedDir
-    ) throws Exception {
-        createTranslatedSchema(targetConn, schemaRegistry, fixtureSet);
-        loadTranslatedData(targetConn, schemaRegistry, fixtureSet, stagedCsvDir, translatedDir);
-    }
-
-    private static void createTranslatedSchema(
-        Connection targetConn,
-        SchemaRegistry schemaRegistry,
-        TpchFixtureSet fixtureSet
-    ) throws Exception {
-        var ddlTranslator = new DDLTranslator(schemaRegistry);
-        var translated6nf = ddlTranslator.translate(readUtf8(fixtureSet.schemaPath()));
-        executeSqlScript(targetConn, translated6nf);
-    }
-
-    private static void loadTranslatedData(
-        Connection targetConn,
-        SchemaRegistry schemaRegistry,
-        TpchFixtureSet fixtureSet,
-        Path stagedCsvDir,
-        Path translatedDir
-    ) throws Exception {
-        var dataTranslator = new DataTranslator(schemaRegistry);
-        deleteDirectoryContents(translatedDir);
-        Files.createDirectories(translatedDir);
-
-        for (var tableName : fixtureSet.tables()) {
-            var csvPath = stagedCsvDir.resolve(tableName + ".csv");
-            var tableOutputDir = translatedDir.resolve(tableName + "_6nf");
-            deleteDirectoryContents(tableOutputDir);
-            Files.createDirectories(tableOutputDir);
-            dataTranslator.translate(tableName, csvPath, tableOutputDir);
-            import6nfCsvs(targetConn, tableName, tableOutputDir);
-        }
-    }
-
-    private static TranslatedDbEnvironment buildEnvironment(
-        Connection sourceConn,
-        Connection targetConn,
-        SchemaRegistry schemaRegistry,
-        TpchDataProvider provider,
-        Path cacheDir
-    ) {
-        var queries = provider.queries();
-        var queryTranslator = new QueryTranslator(schemaRegistry, new SQLIRRenderer());
-        return new TranslatedDbEnvironment(sourceConn, targetConn, queryTranslator, queries, cacheDir, false);
-    }
-
-    private static SchemaRegistry buildSchemaRegistry(TpchFixtureSet fixtureSet) throws IOException {
-        var schemaRegistry = new SchemaRegistry();
-        new DDLTranslator(schemaRegistry).translate(readUtf8(fixtureSet.schemaPath()));
-        return schemaRegistry;
-    }
-
-    static String cacheKeyFor(String scaleFactor, double nullRate) throws IOException {
-        return TpchFixtureSet.cacheKey(nullRate, TpchFixtureSet.load(scaleFactor));
-    }
-
-    private static void importCsv(Connection conn, String tableName, Path csvPath) throws SQLException {
-        try (var stmt = conn.createStatement()) {
-            stmt.execute("COPY %s FROM '%s' (HEADER, DELIMITER ',')"
-                .formatted(tableName, csvPath.toAbsolutePath()));
-        }
-    }
-
-    private static void import6nfCsvs(Connection conn, String tableName, Path dir) throws Exception {
-        var idCsv = dir.resolve(tableName + "__ID.csv");
-        if (Files.exists(idCsv)) {
-            importCsv(conn, tableName + "__ID", idCsv);
-        }
-
-        try (var stream = Files.list(dir)) {
-            var attrFiles = stream
-                .filter(path -> path.getFileName().toString().startsWith(tableName + "_"))
-                .filter(path -> !path.getFileName().toString().equals(tableName + "__ID.csv"))
-                .sorted()
-                .toList();
-
-            for (var csvFile : attrFiles) {
-                var fileName = csvFile.getFileName().toString();
-                var table = fileName.substring(0, fileName.length() - 4);
-                try {
-                    importCsv(conn, table, csvFile);
-                } catch (SQLException e) {
-                    System.err.println("Warning: failed to load " + csvFile.getFileName() + ": " + e.getMessage());
-                }
-            }
-        }
-    }
-
-    private static void executeSqlScript(Connection conn, String sqlScript) throws SQLException {
-        for (var statement : sqlScript.split(";")) {
-            var trimmed = statement.strip();
-            if (!trimmed.isEmpty()) {
-                executeSql(conn, trimmed);
-            }
-        }
-    }
-
-    private static void executeSql(Connection conn, String sql) throws SQLException {
-        try (var stmt = conn.createStatement()) {
-            stmt.execute(sql);
-        }
-    }
-
-    static void refreshOptimizerStatistics(Connection conn) throws SQLException {
-        executeSql(conn, "ANALYZE");
-    }
-
-    private static String readUtf8(Path path) throws IOException {
-        return Files.readString(path, StandardCharsets.UTF_8);
     }
 
     private static String resolveScaleFactor() {
@@ -298,46 +83,42 @@ public class TranslatedDbExtension implements BeforeAllCallback, AfterAllCallbac
         }
     }
 
-    private static Path resolveDbDirectory() throws Exception {
-        var configured = System.getProperty(DB_DIR_PROPERTY);
-        var dbDir = configured == null || configured.isBlank()
-            ? Paths.get("build", "tpch-db").toAbsolutePath().normalize()
-            : Paths.get(configured).toAbsolutePath().normalize();
-        Files.createDirectories(dbDir);
-        return dbDir;
+    private static TpchEnvironmentFactory.ConnectionConfig resolveConnectionConfig() {
+        var jdbcUrl = configuredOrDerivedJdbcUrl();
+        var user = configuredOrEnv(JDBC_USER_PROPERTY, "POSTGRES_USER");
+        var password = configuredOrEnv(JDBC_PASSWORD_PROPERTY, "POSTGRES_PASSWORD");
+
+        if (jdbcUrl == null || jdbcUrl.isBlank() || user == null || user.isBlank()
+            || password == null || password.isBlank()) {
+            Assumptions.assumeTrue(false,
+                "Postgres TPCH connection is not configured. Provide nnsql.tpch.jdbcUrl, "
+                    + "nnsql.tpch.jdbcUser, nnsql.tpch.jdbcPassword or POSTGRES_DB/POSTGRES_USER/POSTGRES_PASSWORD.");
+            return new TpchEnvironmentFactory.ConnectionConfig("", "", "");
+        }
+
+        return new TpchEnvironmentFactory.ConnectionConfig(jdbcUrl, user, password);
     }
 
-    private static String duckDbJdbcUrl(Path dbPath) {
-        return "jdbc:duckdb:" + dbPath.toAbsolutePath();
+    private static String configuredOrDerivedJdbcUrl() {
+        var configured = System.getProperty(JDBC_URL_PROPERTY);
+        if (configured != null && !configured.isBlank()) {
+            return configured.strip();
+        }
+
+        var database = System.getenv("POSTGRES_DB");
+        if (database == null || database.isBlank()) {
+            return null;
+        }
+
+        return "jdbc:postgresql://localhost:5432/" + database.strip();
     }
 
-    private static void deleteDatabaseArtifacts(Path dbPath) throws Exception {
-        Files.deleteIfExists(dbPath);
-        var fileName = dbPath.getFileName().toString();
-        Files.deleteIfExists(dbPath.resolveSibling(fileName + ".wal"));
-    }
-
-    private static void deleteDirectoryContents(Path dir) throws Exception {
-        if (!Files.exists(dir)) {
-            return;
+    private static String configuredOrEnv(String propertyName, String envName) {
+        var configured = System.getProperty(propertyName);
+        if (configured != null && !configured.isBlank()) {
+            return configured.strip();
         }
-        try (var walk = Files.walk(dir)) {
-            walk.sorted(Comparator.reverseOrder()).forEach(path -> {
-                try {
-                    Files.deleteIfExists(path);
-                } catch (Exception _) {
-                }
-            });
-        }
-    }
-
-    private static void closeQuietly(Connection connection) {
-        if (connection == null) {
-            return;
-        }
-        try {
-            connection.close();
-        } catch (Exception _) {
-        }
+        var environment = System.getenv(envName);
+        return environment == null || environment.isBlank() ? null : environment.strip();
     }
 }

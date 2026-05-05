@@ -196,7 +196,7 @@ public final class TpchHtmlReport {
             null
         ));
         sections.add(new SectionModel(
-            "Source EXPLAIN Tree",
+            "Source EXPLAIN",
             sourceExplainTree == null ? "(not available)" : "",
             false,
             "",
@@ -212,7 +212,7 @@ public final class TpchHtmlReport {
             null
         ));
         sections.add(new SectionModel(
-            "Translated EXPLAIN Tree",
+            "Translated EXPLAIN",
             translatedExplainTree == null ? "(not available)" : "",
             false,
             "",

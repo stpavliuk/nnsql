@@ -21,6 +21,12 @@ import static nnsql.query.renderer.sql.Sql.*;
 
 class ProductRenderer {
 
+    private final ProductRowIdExpressionRenderer rowIdExpressionRenderer;
+
+    ProductRenderer(ProductRowIdExpressionRenderer rowIdExpressionRenderer) {
+        this.rowIdExpressionRenderer = rowIdExpressionRenderer;
+    }
+
     void render(
         Product product,
         RenderContext ctx,
@@ -308,11 +314,10 @@ class ProductRenderer {
     private PlainSelect buildSelectItems(Product product) {
         var relations = product.relations();
 
-        var hashArgs = new ArrayList<Expression>();
-        relations.forEach(rel -> hashArgs.add(column(rel.alias() + "__ID", "id")));
-        hashArgs.add(new LongValue(product.nodeId()));
+        var relationIdExpressions = new ArrayList<Expression>();
+        relations.forEach(rel -> relationIdExpressions.add(column(rel.alias() + "__ID", "id")));
 
-        Expression compositeId = fn("hash", hashArgs.toArray(Expression[]::new));
+        var compositeId = rowIdExpressionRenderer.render(relationIdExpressions, product.nodeId());
 
         var ps = new PlainSelect();
         ps.addSelectItem(compositeId, new Alias("id", true));

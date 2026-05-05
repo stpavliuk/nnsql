@@ -11,7 +11,7 @@ import java.util.stream.IntStream;
 public class TpchDataProvider implements BenchmarkDataProvider {
 
     private static final String QUERIES_PROPERTY = "nnsql.tpch.queries";
-    private static final String RESOURCE_ROOT = "tpch/sqlite_tpc/";
+    private static final String RESOURCE_ROOT = "tpch/queries/";
     private static final int QUERY_COUNT = 22;
 
     @Override
