@@ -26,6 +26,10 @@ public interface SqlDialect {
         return false;
     }
 
+    default boolean useLateralAttributeLookups() {
+        return false;
+    }
+
     static SqlDialect duckDb() {
         return new SqlDialect() {
             @Override
@@ -71,6 +75,11 @@ public interface SqlDialect {
 
             @Override
             public boolean materializeCommonTableExpressions() {
+                return true;
+            }
+
+            @Override
+            public boolean useLateralAttributeLookups() {
                 return true;
             }
         };

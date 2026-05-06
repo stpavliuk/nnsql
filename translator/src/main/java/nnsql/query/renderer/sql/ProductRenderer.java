@@ -4,6 +4,7 @@ import net.sf.jsqlparser.expression.*;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
 import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.select.Join;
+import net.sf.jsqlparser.statement.select.LateralSubSelect;
 import net.sf.jsqlparser.statement.select.PlainSelect;
 
 import nnsql.query.ir.Product;
@@ -21,9 +22,11 @@ import static nnsql.query.renderer.sql.Sql.*;
 class ProductRenderer {
 
     private final ProductRowIdExpressionRenderer rowIdExpressionRenderer;
+    private final SqlDialect dialect;
 
-    ProductRenderer(ProductRowIdExpressionRenderer rowIdExpressionRenderer) {
-        this.rowIdExpressionRenderer = rowIdExpressionRenderer;
+    ProductRenderer(SqlDialect dialect) {
+        this.rowIdExpressionRenderer = dialect.productRowIdExpressionRenderer();
+        this.dialect = dialect;
     }
 
     void render(
@@ -422,16 +425,36 @@ class ProductRenderer {
 
         var ps = new PlainSelect();
         ps.addSelectItem(column(allIdsTbl, "id"));
-        ps.addSelectItem(column(attrTbl, "v"));
         ps.setFromItem(allIdsTbl);
-        ps.addJoins(join(
-            attrTbl,
-            new EqualsTo(
-                column(allIdsTbl, "id" + idIndex),
-                column(attrTbl, "id")
-            )
-        ));
+        if (dialect.useLateralAttributeLookups()) {
+            var attrAlias = qualifiedAttr + "_lookup";
+            ps.addSelectItem(column(attrAlias, "v"));
+            ps.addJoins(lateralAttributeJoin(attrTbl, attrAlias, column(allIdsTbl, "id" + idIndex)));
+        } else {
+            ps.addSelectItem(column(attrTbl, "v"));
+            ps.addJoins(join(
+                attrTbl,
+                new EqualsTo(
+                    column(allIdsTbl, "id" + idIndex),
+                    column(attrTbl, "id")
+                )
+            ));
+        }
 
         ctx.addCTE(attrTable(baseName, qualifiedAttr), ps);
+    }
+
+    private Join lateralAttributeJoin(Table attrTbl, String alias, net.sf.jsqlparser.expression.Expression sourceId) {
+        var lookup = new PlainSelect();
+        lookup.addSelectItem(column(attrTbl, "v"));
+        lookup.setFromItem(attrTbl);
+        lookup.setWhere(new EqualsTo(column(attrTbl, "id"), sourceId));
+
+        var lateral = new LateralSubSelect();
+        lateral.setPrefix("LATERAL");
+        lateral.setSelect(lookup);
+        lateral.setAlias(new Alias(alias, false));
+
+        return join(lateral, new BooleanValue(true));
     }
 }

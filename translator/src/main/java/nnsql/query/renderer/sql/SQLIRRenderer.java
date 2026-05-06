@@ -39,7 +39,7 @@ public class SQLIRRenderer implements IRRenderer {
     private SQLIRRenderer(SqlDialect dialect) {
         this.dialect = dialect;
         var conditionRenderer = new ConditionRenderer(this::renderNodeForSubquery, dialect);
-        this.productRenderer = new ProductRenderer(dialect.productRowIdExpressionRenderer());
+        this.productRenderer = new ProductRenderer(dialect);
         this.filterRenderer = new FilterRenderer(conditionRenderer);
         this.groupRenderer = new GroupRenderer(dialect);
         this.aggFilterRenderer = new AggFilterRenderer(conditionRenderer);
