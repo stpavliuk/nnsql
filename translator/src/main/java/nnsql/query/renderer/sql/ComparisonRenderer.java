@@ -53,6 +53,25 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         RenderContext ctx
     ) {
         var effectiveNegate = negate != inSubquery.isNegated();
+        if (!effectiveNegate) {
+            var directMembershipSubquery = renderDirectInMembershipSubquery(inSubquery.subquery());
+            if (directMembershipSubquery.isPresent()) {
+                return switch (inSubquery.left()) {
+                    case IRExpression.ColumnRef(var col) ->
+                        existsColumnInSubquery(rel, col, directMembershipSubquery.get(), false);
+                    case IRExpression.Literal lit ->
+                        inPredicate(literal(lit), directMembershipSubquery.get(), false);
+                    case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
+                         IRExpression.FunctionCall _ ->
+                        renderComputedInSubquery(inSubquery.left(), directMembershipSubquery.get(), rel, false);
+                    case IRExpression.ScalarSubquery _ ->
+                        throw unsupported("Scalar subquery on left side of IN");
+                    case IRExpression.Aggregate _ ->
+                        throw unsupported(inSubquery.left().getClass().getSimpleName());
+                };
+            }
+        }
+
         var membershipSubquery = renderMembershipSubquery(
             inSubquery.subquery(),
             "IN subquery",
@@ -894,6 +913,134 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         nullRows.setWhere(notExists(nullProbe));
 
         return new RenderedValueSubquery(values, nullRows);
+    }
+
+    private Optional<PlainSelect> renderDirectInMembershipSubquery(IRNode subqueryIR) {
+        if (!(subqueryIR instanceof Return returnNode)
+            || returnNode.selectStar()
+            || returnNode.selectedAttributes().size() != 1
+            || !(returnNode.selectedAttributes().getFirst().source() instanceof IRExpression.ColumnRef(var selectedColumn))
+            || !(returnNode.input() instanceof AggFilter aggFilter)
+            || !(aggFilter.input() instanceof Group group)
+            || group.groupingAttributes().size() != 1
+            || group.aggregates().size() != 1
+            || !(group.input() instanceof Product product)
+            || product.relations().size() != 1
+            || !product.joinPredicates().isEmpty()
+            || !(product.relations().getFirst() instanceof Relation.Table relation)) {
+            return Optional.empty();
+        }
+
+        var groupingAttribute = group.groupingAttributes().getFirst();
+        if (!selectedColumn.equals(groupingAttribute)) {
+            return Optional.empty();
+        }
+
+        var aggregate = group.aggregates().getFirst();
+        if (aggregate.argument() instanceof IRExpression.ColumnRef(var aggregateColumn)) {
+            if (!allAttributesBelongToRelation(List.of(groupingAttribute, aggregateColumn), relation)) {
+                return Optional.empty();
+            }
+            return renderDirectGroupedMembershipSubquery(
+                relation,
+                groupingAttribute,
+                aggregateColumn,
+                aggregate,
+                aggFilter.condition()
+            );
+        }
+
+        return Optional.empty();
+    }
+
+    private Optional<PlainSelect> renderDirectGroupedMembershipSubquery(
+        Relation.Table relation,
+        String groupingAttribute,
+        String aggregateColumn,
+        IRExpression.Aggregate aggregate,
+        Condition havingCondition
+    ) {
+        var groupingAttrTbl = table(attrTable(relation.tableName(), unqualifiedAttribute(groupingAttribute, relation)));
+        var aggregateAttrTbl = table(attrTable(relation.tableName(), unqualifiedAttribute(aggregateColumn, relation)));
+        var aggregateExpr = fn(aggregate.function(), column(aggregateAttrTbl, "v"));
+        aggregateExpr.setDistinct(aggregate.distinct());
+
+        var having = renderDirectAggregateHaving(havingCondition, aggregate.alias(), aggregateExpr);
+        if (having.isEmpty()) {
+            return Optional.empty();
+        }
+
+        var ps = new PlainSelect();
+        ps.addSelectItem(column(groupingAttrTbl, "v"));
+        ps.setFromItem(groupingAttrTbl);
+        ps.addJoins(leftJoin(
+            aggregateAttrTbl,
+            new EqualsTo(column(aggregateAttrTbl, "id"), column(groupingAttrTbl, "id"))
+        ));
+        ps.addGroupByColumnReference(column(groupingAttrTbl, "v"));
+        ps.setHaving(having.get());
+        return Optional.of(ps);
+    }
+
+    private Optional<Expression> renderDirectAggregateHaving(
+        Condition condition,
+        String aggregateAlias,
+        Expression aggregateExpr
+    ) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, var operator) -> {
+                var leftExpr = renderDirectAggregateHavingExpression(left, aggregateAlias, aggregateExpr);
+                var rightExpr = renderDirectAggregateHavingExpression(right, aggregateAlias, aggregateExpr);
+                if (leftExpr.isEmpty() || rightExpr.isEmpty()) {
+                    yield Optional.empty();
+                }
+                yield Optional.of(comparison(leftExpr.get(), operator, rightExpr.get()));
+            }
+            case Condition.And(var operands) -> renderDirectAggregateHavingLogical(operands, aggregateAlias, aggregateExpr, true);
+            case Condition.Or(var operands) -> renderDirectAggregateHavingLogical(operands, aggregateAlias, aggregateExpr, false);
+            case Condition.Not(var operand) -> renderDirectAggregateHaving(operand, aggregateAlias, aggregateExpr)
+                .map(expr -> not(paren(expr)));
+            case Condition.IsNull _, Condition.Like _, Condition.Exists _, Condition.InSubquery _ -> Optional.empty();
+        };
+    }
+
+    private Optional<Expression> renderDirectAggregateHavingLogical(
+        List<Condition> operands,
+        String aggregateAlias,
+        Expression aggregateExpr,
+        boolean conjunction
+    ) {
+        var rendered = new ArrayList<Expression>();
+        for (var operand : operands) {
+            var expression = renderDirectAggregateHaving(operand, aggregateAlias, aggregateExpr);
+            if (expression.isEmpty()) {
+                return Optional.empty();
+            }
+            rendered.add(paren(expression.get()));
+        }
+        return Optional.of(conjunction ? andAll(rendered) : orAll(rendered));
+    }
+
+    private Optional<Expression> renderDirectAggregateHavingExpression(
+        IRExpression expression,
+        String aggregateAlias,
+        Expression aggregateExpr
+    ) {
+        return switch (expression) {
+            case IRExpression.ColumnRef(var columnName) when columnName.equals(aggregateAlias) ->
+                Optional.of(aggregateExpr);
+            case IRExpression.Literal literal -> Optional.of(literal(literal));
+            case IRExpression.ColumnRef _, IRExpression.BinaryOp _, IRExpression.Cast _,
+                 IRExpression.FunctionCall _, IRExpression.CaseWhen _,
+                 IRExpression.Aggregate _, IRExpression.ScalarSubquery _ -> Optional.empty();
+        };
+    }
+
+    private boolean allAttributesBelongToRelation(List<String> attributes, Relation.Table relation) {
+        var sourceAttributes = new HashSet<>(relation.attributes());
+        return attributes.stream()
+            .map(attribute -> unqualifiedAttribute(attribute, relation))
+            .allMatch(sourceAttributes::contains);
     }
 
     private UnsupportedOperationException unsupported(String type) {
