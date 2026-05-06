@@ -745,7 +745,10 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
     private boolean isInlineExpression(IRExpression expression) {
         return switch (expression) {
             case IRExpression.ColumnRef _, IRExpression.Literal _ -> true;
-            default -> false;
+            case IRExpression.FunctionCall(_, var arguments) ->
+                arguments.stream().allMatch(this::isInlineExpression);
+            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
+                 IRExpression.Aggregate _, IRExpression.ScalarSubquery _ -> false;
         };
     }
 
