@@ -1007,6 +1007,45 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererInlinesQ19StyleRevenueQuery() {
+        var postgresTranslator = new QueryTranslator(schemaRegistryWithTpchTables(), SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            // language=sql
+            """
+                SELECT SUM(l_extendedprice * (1 - l_discount)) AS revenue
+                FROM lineitem, part
+                WHERE p_partkey = l_partkey
+                  AND (
+                    (
+                      p_brand = 'Brand#12'
+                      AND p_container = 'SM CASE'
+                      AND l_quantity >= 1
+                      AND l_quantity <= 11
+                      AND p_size >= 1
+                      AND p_size <= 5
+                      AND l_shipmode = 'AIR'
+                      AND l_shipinstruct = 'DELIVER IN PERSON'
+                    )
+                    OR
+                    (
+                      p_brand = 'Brand#23'
+                      AND p_container = 'MED BAG'
+                      AND l_quantity >= 10
+                      AND l_quantity <= 20
+                      AND p_size >= 1
+                      AND p_size <= 10
+                      AND l_shipmode = 'AIR'
+                      AND l_shipinstruct = 'DELIVER IN PERSON'
+                    )
+                  )
+                """
+        ));
+
+        assertTrue(sql.contains("all_ids_product_0 AS"));
+        assertFalse(sql.contains("AS MATERIALIZED"));
+    }
+
+    @Test
     void testUnsupportedOrderByExpressions() {
         assertThrows(UnsupportedOperationException.class, () ->
             translator.translate("SELECT R.A FROM R ORDER BY R.A + R.B"));
@@ -1126,6 +1165,31 @@ class QueryTranslationTest {
 
     private void assertContainsSql(String sql, String expectedFragment) {
         assertTrue(sql.contains(normalizeWhitespace(expectedFragment)));
+    }
+
+    private SchemaRegistry schemaRegistryWithTpchTables() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable(
+            "lineitem",
+            List.of(
+                "l_partkey",
+                "l_quantity",
+                "l_extendedprice",
+                "l_discount",
+                "l_shipinstruct",
+                "l_shipmode"
+            )
+        );
+        schemaRegistry.registerTable(
+            "part",
+            List.of(
+                "p_partkey",
+                "p_brand",
+                "p_container",
+                "p_size"
+            )
+        );
+        return schemaRegistry;
     }
 
     private String normalizeWhitespace(String str) {

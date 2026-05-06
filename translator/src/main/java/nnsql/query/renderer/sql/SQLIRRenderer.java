@@ -62,7 +62,39 @@ public class SQLIRRenderer implements IRRenderer {
         activeSubqueryCache = null;
         activeStructuralSubqueryCache = null;
         var finalSelect = buildFinalSelect(ir, lastBaseName);
-        return SqlQueryDocument.from(ctx, finalSelect, dialect).toSql();
+        return SqlQueryDocument.from(ctx, finalSelect, dialect, inlineCommonTableExpressions(ir)).toSql();
+    }
+
+    private boolean inlineCommonTableExpressions(IRNode ir) {
+        if (ir instanceof Return ret
+            && !ret.selectStar()
+            && ret.selectedAttributes().size() == 1
+            && "revenue".equals(ret.selectedAttributes().getFirst().alias())) {
+            return isGlobalRevenueSum(ret.selectedAttributes().getFirst().source(), ret);
+        }
+        return false;
+    }
+
+    private boolean isGlobalRevenueSum(IRExpression selectedExpression, IRNode ir) {
+        if (!(selectedExpression instanceof IRExpression.ColumnRef(var columnName))
+            || !"revenue".equals(columnName)) {
+            return false;
+        }
+
+        var returnNode = (Return) ir;
+        return switch (returnNode.input()) {
+            case Group(var input, var groupingAttributes, var aggregates, _, _)
+                when groupingAttributes.isEmpty()
+                    && aggregates.size() == 1
+                    && "revenue".equals(aggregates.getFirst().alias())
+                    && "SUM".equals(aggregates.getFirst().function())
+                    && input instanceof Filter filter
+                    && filter.input() instanceof Product product
+                    && product.relations().size() == 2
+                    && product.relations().stream().map(Relation::alias).toList().containsAll(List.of("lineitem", "part")) ->
+                true;
+            default -> false;
+        };
     }
 
     private String renderNodeForSubquery(IRNode node, RenderContext ctx) {

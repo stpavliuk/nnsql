@@ -13,16 +13,28 @@ final class SqlQueryDocument {
     private final PlainSelect finalSelect;
     private final List<CTE> ctes;
     private final SqlDialect dialect;
+    private final boolean forceInlineCtes;
 
-    private SqlQueryDocument(PlainSelect finalSelect, List<CTE> ctes, SqlDialect dialect) {
+    private SqlQueryDocument(
+        PlainSelect finalSelect,
+        List<CTE> ctes,
+        SqlDialect dialect,
+        boolean forceInlineCtes
+    ) {
         this.finalSelect = finalSelect;
         this.ctes = ctes;
         this.dialect = dialect;
+        this.forceInlineCtes = forceInlineCtes;
     }
 
-    static SqlQueryDocument from(RenderContext ctx, PlainSelect finalSelect, SqlDialect dialect) {
+    static SqlQueryDocument from(
+        RenderContext ctx,
+        PlainSelect finalSelect,
+        SqlDialect dialect,
+        boolean forceInlineCtes
+    ) {
         var rootCTEs = RenderContext.dependenciesOf(finalSelect);
-        return new SqlQueryDocument(finalSelect, ctx.getUsedCTEs(rootCTEs), dialect);
+        return new SqlQueryDocument(finalSelect, ctx.getUsedCTEs(rootCTEs), dialect, forceInlineCtes);
     }
 
     String toSql() {
@@ -41,7 +53,7 @@ final class SqlQueryDocument {
         var withItem = new WithItem<ParenthesedSelect>();
         withItem.setAlias(new Alias(cte.name(), false));
         withItem.setSelect(select);
-        withItem.setMaterialized(dialect.materializeCommonTableExpressions());
+        withItem.setMaterialized(!forceInlineCtes && dialect.materializeCommonTableExpressions());
         return withItem;
     }
 }
