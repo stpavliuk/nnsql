@@ -9,7 +9,10 @@ import nnsql.query.ir.*;
 import nnsql.query.renderer.RenderContext;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.BiFunction;
@@ -304,6 +307,18 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             throw new IllegalStateException("Correlated scalar subquery is missing correlation metadata");
         }
 
+        var correlatedAggregate = renderDirectCorrelatedAggregate(subquery, rel, ctx);
+        if (correlatedAggregate.isPresent()) {
+            return existsExprToCorrelatedAggregateSubquery(
+                rel,
+                leftExpr,
+                op,
+                correlatedAggregate.get(),
+                subquery.correlations(),
+                negate
+            );
+        }
+
         var valueAttribute = subquery.valueAttribute().orElseThrow(() -> new IllegalStateException(
             "Correlated scalar subquery is missing value attribute"
         ));
@@ -390,6 +405,225 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         ps.setJoins(joins);
         ps.setWhere(andAll(conditions));
         return exists(ps);
+    }
+
+    private Expression existsExprToCorrelatedAggregateSubquery(
+        String rel,
+        IRExpression leftExpr,
+        String op,
+        Expression scalarAggregate,
+        List<IRExpression.Correlation> correlations,
+        boolean negate
+    ) {
+        var outerIdTbl = table(idTable(rel));
+        var collectedColumns = new ArrayList<String>();
+        collectedColumns.addAll(ExpressionSqlRenderer.collectColumns(leftExpr));
+        collectedColumns.addAll(correlations.stream()
+            .map(IRExpression.Correlation::outerAttribute)
+            .toList());
+        var joinedColumns = collectedColumns.stream().distinct().toList();
+        if (joinedColumns.isEmpty()) {
+            throw new IllegalStateException("Correlated scalar aggregate requires at least one outer attribute");
+        }
+
+        var firstTable = table(attrTable(rel, joinedColumns.getFirst()));
+        var ps = new PlainSelect();
+        ps.addSelectItem(new AllColumns());
+        ps.setFromItem(firstTable);
+
+        var joins = new ArrayList<Join>();
+        var conditions = new ArrayList<Expression>();
+        conditions.add(new EqualsTo(
+            column(firstTable, "id"),
+            column(outerIdTbl, "id")
+        ));
+        addComputedExprAttributeJoins(
+            rel,
+            joinedColumns.subList(1, joinedColumns.size()),
+            column(outerIdTbl, "id"),
+            false,
+            Sql.NonCaseJoinMode.SIMPLE_JOIN_WITH_WHERE_ID,
+            joins,
+            conditions
+        );
+
+        var valueComparison = comparison(
+            ExpressionSqlRenderer.toSqlExpr(leftExpr, rel, dialect),
+            op,
+            scalarAggregate
+        );
+        if (negate) {
+            valueComparison = not(paren(valueComparison));
+        }
+        conditions.add(valueComparison);
+
+        if (!joins.isEmpty()) {
+            ps.setJoins(joins);
+        }
+        ps.setWhere(andAll(conditions));
+        return exists(ps);
+    }
+
+    private Optional<Expression> renderDirectCorrelatedAggregate(
+        IRExpression.ScalarSubquery subquery,
+        String outerBaseName,
+        RenderContext ctx
+    ) {
+        if (subquery.subqueryPipeline().isEmpty() || subquery.valueAttribute().isNone()) {
+            return Optional.empty();
+        }
+        if (subquery.correlations().stream().anyMatch(correlation -> !"=".equals(correlation.operator()))) {
+            return Optional.empty();
+        }
+
+        var root = subquery.subqueryPipeline().getFirst();
+        if (!(root instanceof Return returnNode)
+            || !(returnNode.input() instanceof Group group)
+            || !(group.input() instanceof Product product)
+            || product.relations().size() != 1
+            || !product.joinPredicates().isEmpty()) {
+            return Optional.empty();
+        }
+        if (!(product.relations().getFirst() instanceof Relation.Table relation)) {
+            return Optional.empty();
+        }
+
+        var correlationInnerAttributes = subquery.correlations().stream()
+            .map(IRExpression.Correlation::innerAttribute)
+            .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        if (!new HashSet<>(group.groupingAttributes()).equals(correlationInnerAttributes)) {
+            return Optional.empty();
+        }
+
+        var valueAttribute = subquery.valueAttribute().get();
+        var returnedValue = returnNode.selectedAttributes().stream()
+            .filter(attribute -> attribute.alias().equals(valueAttribute))
+            .findFirst();
+        if (returnedValue.isEmpty()) {
+            return Optional.empty();
+        }
+
+        var aggregateByAlias = new HashMap<String, IRExpression.Aggregate>();
+        group.aggregates().forEach(aggregate -> aggregateByAlias.put(aggregate.alias(), aggregate));
+
+        var innerIdAlias = ctx.nextName("corr_agg_id_");
+        var attrAliases = new LinkedHashMap<String, String>();
+        subquery.correlations().forEach(correlation ->
+            attrAliases.computeIfAbsent(correlation.innerAttribute(), _ -> ctx.nextName("corr_agg_attr_"))
+        );
+        group.aggregates().stream()
+            .flatMap(aggregate -> ExpressionSqlRenderer.collectColumns(aggregate.argument()).stream())
+            .forEach(attribute -> attrAliases.computeIfAbsent(attribute, _ -> ctx.nextName("corr_agg_attr_")));
+
+        var select = new PlainSelect();
+        select.setFromItem(tableAs(relation.tableName() + "__ID", innerIdAlias));
+
+        var joins = new ArrayList<Join>();
+        attrAliases.forEach((attribute, alias) -> {
+            var attrTable = tableAs(attrTable(relation.tableName(), unqualifiedAttribute(attribute, relation)), alias);
+            var idComparison = new EqualsTo(column(attrTable, "id"), column(innerIdAlias, "id"));
+            if (correlationInnerAttributes.contains(attribute)) {
+                joins.add(join(attrTable, idComparison));
+            } else {
+                joins.add(leftJoin(attrTable, idComparison));
+            }
+        });
+        if (!joins.isEmpty()) {
+            select.setJoins(joins);
+        }
+
+        var correlationPredicates = subquery.correlations().stream()
+            .map(correlation -> comparison(
+                column(attrAliases.get(correlation.innerAttribute()), "v"),
+                correlation.operator(),
+                column(attrTable(outerBaseName, correlation.outerAttribute()), "v")
+            ))
+            .toList();
+        select.setWhere(andAll(correlationPredicates));
+
+        try {
+            select.addSelectItem(renderAggregateValueExpression(
+                returnedValue.get().source(),
+                aggregateByAlias,
+                attrAliases
+            ));
+        } catch (UnsupportedOperationException _) {
+            return Optional.empty();
+        }
+
+        var scalarSelect = new ParenthesedSelect();
+        scalarSelect.setSelect(select);
+        return Optional.of(scalarSelect);
+    }
+
+    private Expression renderAggregateValueExpression(
+        IRExpression expression,
+        HashMap<String, IRExpression.Aggregate> aggregateByAlias,
+        LinkedHashMap<String, String> attrAliases
+    ) {
+        return switch (expression) {
+            case IRExpression.ColumnRef(var columnName) -> {
+                var aggregate = aggregateByAlias.get(columnName);
+                if (aggregate == null) {
+                    throw new UnsupportedOperationException("Only aggregate aliases are supported in scalar value");
+                }
+                yield renderAggregateFunction(aggregate, attrAliases);
+            }
+            case IRExpression.Literal literal -> literal(literal);
+            case IRExpression.BinaryOp(var left, var operator, var right) ->
+                arithmetic(
+                    renderAggregateValueExpression(left, aggregateByAlias, attrAliases),
+                    operator.toSql(),
+                    renderAggregateValueExpression(right, aggregateByAlias, attrAliases)
+                );
+            case IRExpression.Cast(var inner, var targetType) ->
+                new CastExpression(
+                    "CAST",
+                    renderAggregateValueExpression(inner, aggregateByAlias, attrAliases),
+                    targetType
+                );
+            case IRExpression.FunctionCall _, IRExpression.CaseWhen _,
+                 IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->
+                throw new UnsupportedOperationException("Unsupported correlated aggregate value expression");
+        };
+    }
+
+    private Expression renderAggregateFunction(
+        IRExpression.Aggregate aggregate,
+        LinkedHashMap<String, String> attrAliases
+    ) {
+        var argument = renderAggregateArgumentExpression(aggregate.argument(), attrAliases);
+        var aggregateFunction = fn(aggregate.function(), argument);
+        aggregateFunction.setDistinct(aggregate.distinct());
+        return aggregateFunction;
+    }
+
+    private Expression renderAggregateArgumentExpression(
+        IRExpression expression,
+        LinkedHashMap<String, String> attrAliases
+    ) {
+        return switch (expression) {
+            case IRExpression.ColumnRef(var columnName) -> column(attrAliases.get(columnName), "v");
+            case IRExpression.Literal literal -> literal(literal);
+            case IRExpression.BinaryOp(var left, var operator, var right) ->
+                arithmetic(
+                    renderAggregateArgumentExpression(left, attrAliases),
+                    operator.toSql(),
+                    renderAggregateArgumentExpression(right, attrAliases)
+                );
+            case IRExpression.Cast(var inner, var targetType) ->
+                new CastExpression("CAST", renderAggregateArgumentExpression(inner, attrAliases), targetType);
+            case IRExpression.FunctionCall _, IRExpression.CaseWhen _,
+                 IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->
+                throw new UnsupportedOperationException("Unsupported correlated aggregate argument expression");
+        };
+    }
+
+    private String unqualifiedAttribute(String qualifiedAttribute, Relation.Table relation) {
+        var prefix = relation.alias() + "_";
+        return qualifiedAttribute.startsWith(prefix)
+            ? qualifiedAttribute.substring(prefix.length())
+            : qualifiedAttribute;
     }
 
     private PlainSelect renderCorrelatedSubqueryRows(

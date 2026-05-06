@@ -381,8 +381,10 @@ class QueryTranslationTest {
             "SELECT R.A FROM R, S WHERE R.B = S.B AND S.C = (SELECT MIN(T.D) FROM T WHERE T.E = R.A)"
         ));
 
-        assertTrue(sql.contains("corr_subquery_value"));
-        assertTrue(sql.contains("corr_subquery_attr_1"));
+        assertTrue(sql.contains("SELECT MIN("));
+        assertTrue(sql.contains("T_E AS corr_agg_attr_"));
+        assertTrue(sql.contains("WHERE corr_agg_attr_"));
+        assertTrue(sql.contains("product_0_R_A.v"));
     }
 
     @Test
