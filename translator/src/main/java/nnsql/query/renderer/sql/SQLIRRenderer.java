@@ -11,6 +11,7 @@ import net.sf.jsqlparser.statement.select.PlainSelect;
 import nnsql.query.ir.*;
 import nnsql.query.renderer.*;
 
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 
@@ -31,6 +32,7 @@ public class SQLIRRenderer implements IRRenderer {
     private final SqlDialect        dialect;
 
     private IdentityHashMap<IRNode, String> activeSubqueryCache;
+    private HashMap<String, String> activeStructuralSubqueryCache;
 
     public SQLIRRenderer() {
         this(SqlDialect.duckDb());
@@ -55,14 +57,31 @@ public class SQLIRRenderer implements IRRenderer {
     public String render(IRNode ir) {
         var ctx = new RenderContext();
         activeSubqueryCache = new IdentityHashMap<>();
+        activeStructuralSubqueryCache = new HashMap<>();
         var lastBaseName = renderNode(ir, ctx);
         activeSubqueryCache = null;
+        activeStructuralSubqueryCache = null;
         var finalSelect = buildFinalSelect(ir, lastBaseName);
         return SqlQueryDocument.from(ctx, finalSelect, dialect).toSql();
     }
 
     private String renderNodeForSubquery(IRNode node, RenderContext ctx) {
-        return renderNode(node, ctx);
+        var identityCached = activeSubqueryCache.get(node);
+        if (identityCached != null) {
+            return identityCached;
+        }
+
+        var structuralKey = structuralSubqueryKey(node);
+        var structuralCached = activeStructuralSubqueryCache.get(structuralKey);
+        if (structuralCached != null) {
+            activeSubqueryCache.put(node, structuralCached);
+            return structuralCached;
+        }
+
+        var renderedBaseName = renderNode(node, ctx);
+        activeSubqueryCache.put(node, renderedBaseName);
+        activeStructuralSubqueryCache.put(structuralKey, renderedBaseName);
+        return renderedBaseName;
     }
 
     private String renderNode(IRNode node, RenderContext ctx) {
@@ -96,12 +115,59 @@ public class SQLIRRenderer implements IRRenderer {
         var subqueryBaseNames = new java.util.LinkedHashMap<String, String>();
         for (var rel : product.relations()) {
             if (rel instanceof Relation.Subquery(var alias, var ir, var attrs)) {
-                var subqBaseName = activeSubqueryCache.computeIfAbsent(
-                    ir, k -> renderNode(k, ctx));
+                var subqBaseName = renderNodeForSubquery(ir, ctx);
                 subqueryBaseNames.put(alias, subqBaseName);
             }
         }
         return subqueryBaseNames;
+    }
+
+    private String structuralSubqueryKey(IRNode node) {
+        return switch (node) {
+            case Product product -> "Product(%s|%s)".formatted(
+                product.relations().stream().map(this::structuralRelationKey).toList(),
+                product.joinPredicates()
+            );
+            case Filter filter -> "Filter(%s|%s|%s)".formatted(
+                structuralSubqueryKey(filter.input()),
+                filter.condition(),
+                filter.attributes()
+            );
+            case Group group -> "Group(%s|%s|%s|%s)".formatted(
+                structuralSubqueryKey(group.input()),
+                group.groupingAttributes(),
+                group.aggregates(),
+                group.outputAttributes()
+            );
+            case AggFilter aggFilter -> "AggFilter(%s|%s|%s)".formatted(
+                structuralSubqueryKey(aggFilter.input()),
+                aggFilter.condition(),
+                aggFilter.attributes()
+            );
+            case Return ret -> "Return(%s|%s|%s)".formatted(
+                structuralSubqueryKey(ret.input()),
+                ret.selectedAttributes(),
+                ret.selectStar()
+            );
+            case DuplElim duplElim -> "DuplElim(%s|%s)".formatted(
+                structuralSubqueryKey(duplElim.input()),
+                duplElim.attributes()
+            );
+            case Sort sort -> "Sort(%s|%s|%s)".formatted(
+                structuralSubqueryKey(sort.input()),
+                sort.keys(),
+                sort.limit()
+            );
+        };
+    }
+
+    private String structuralRelationKey(Relation relation) {
+        return switch (relation) {
+            case Relation.Table(var tableName, var alias, var attributes) ->
+                "Table(%s|%s|%s)".formatted(tableName, alias, attributes);
+            case Relation.Subquery(_, var ir, var attributes) ->
+                "Subquery(%s|%s)".formatted(structuralSubqueryKey(ir), attributes);
+        };
     }
 
     private String renderWithoutInput(String prefix, RenderContext ctx,
