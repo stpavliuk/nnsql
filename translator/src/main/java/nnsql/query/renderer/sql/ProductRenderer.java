@@ -135,8 +135,9 @@ class ProductRenderer {
         var relations = product.relations();
         var predicates = new ArrayList<>(product.joinPredicates());
 
+        var startRelationIndex = startRelationIndex(relations);
         var joined = new LinkedHashSet<Integer>();
-        joined.add(0);
+        joined.add(startRelationIndex);
 
         record JoinStep(int newRelIndex, int existingRelIndex,
                         String newAttr, String existingAttr) {
@@ -181,7 +182,7 @@ class ProductRenderer {
         }
 
         var ps = buildSelectItems(product);
-        ps.setFromItem(idTableFor(relations.getFirst(), subqueryBaseNames));
+        ps.setFromItem(idTableFor(relations.get(startRelationIndex), subqueryBaseNames));
 
         var joins = new ArrayList<Join>();
         var joinedAttrAliases = new LinkedHashMap<RelationAttr, String>();
@@ -255,6 +256,21 @@ class ProductRenderer {
         }
 
         ctx.addCTE("all_ids_" + baseName, ps);
+    }
+
+    private int startRelationIndex(java.util.List<Relation> relations) {
+        var bestIndex = 0;
+        var bestAttributeCount = Integer.MAX_VALUE;
+
+        for (int i = 0; i < relations.size(); i++) {
+            var relation = relations.get(i);
+            if (relation instanceof Relation.Subquery && relation.attributes().size() < bestAttributeCount) {
+                bestIndex = i;
+                bestAttributeCount = relation.attributes().size();
+            }
+        }
+
+        return bestAttributeCount == Integer.MAX_VALUE ? 0 : bestIndex;
     }
 
     private String ensureJoinedAttributeAlias(
