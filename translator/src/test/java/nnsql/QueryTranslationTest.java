@@ -1033,6 +1033,33 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererUsesDirectFilteredSingleTableGroup() {
+        var postgresTranslator = new QueryTranslator(schemaRegistryWithLineitemQ1Columns(), SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            // language=sql
+            """
+                SELECT l_returnflag,
+                       l_linestatus,
+                       SUM(l_quantity) AS sum_qty,
+                       SUM(l_extendedprice * (1 - l_discount)) AS sum_disc_price,
+                       COUNT(*) AS count_order
+                FROM lineitem
+                WHERE l_shipdate <= '1998-09-02'
+                GROUP BY l_returnflag, l_linestatus
+                ORDER BY l_returnflag, l_linestatus
+                """
+        ));
+
+        assertTrue(sql.contains("FROM lineitem_l_shipdate AS direct_group_attr_0"));
+        assertTrue(sql.contains("LEFT JOIN lineitem_l_returnflag AS direct_group_attr_1"));
+        assertTrue(sql.contains("LEFT JOIN lineitem_l_linestatus AS direct_group_attr_2"));
+        assertTrue(sql.contains("GROUP BY direct_group_attr_1.v, direct_group_attr_2.v"));
+        assertTrue(sql.contains("SUM(direct_group_attr_4.v * (1.0 - direct_group_attr_5.v)) AS sum_disc_price"));
+        assertFalse(sql.contains("product_0_"));
+        assertFalse(sql.contains("filter_1_"));
+    }
+
+    @Test
     void testPostgresCompatibleRendererInlinesQ19StyleRevenueQuery() {
         var postgresTranslator = new QueryTranslator(schemaRegistryWithTpchTables(), SQLIRRenderer.postgresCompatible());
         var sql = normalizeWhitespace(postgresTranslator.translate(
@@ -1213,6 +1240,23 @@ class QueryTranslationTest {
                 "p_brand",
                 "p_container",
                 "p_size"
+            )
+        );
+        return schemaRegistry;
+    }
+
+    private SchemaRegistry schemaRegistryWithLineitemQ1Columns() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable(
+            "lineitem",
+            List.of(
+                "l_quantity",
+                "l_extendedprice",
+                "l_discount",
+                "l_tax",
+                "l_returnflag",
+                "l_linestatus",
+                "l_shipdate"
             )
         );
         return schemaRegistry;

@@ -210,12 +210,10 @@ class TpchPostgresQueriesTest {
                 query,
                 sourceExecution == null ? null : sourceExecution.executionTimeMs(),
                 sourceExecution == null ? null : sourceExecution.explainPlan(),
-                sourceExecution == null ? null : sourceExecution.explainHtml(),
                 sourceExecution == null ? null : sourceExecution.rows().size(),
                 translated,
                 translatedExecution == null ? null : translatedExecution.executionTimeMs(),
                 translatedExecution == null ? null : translatedExecution.explainPlan(),
-                translatedExecution == null ? null : translatedExecution.explainHtml(),
                 translatedExecution == null ? null : translatedExecution.rows().size(),
                 success,
                 failureMessage

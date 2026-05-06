@@ -76,7 +76,6 @@ public class TranslatedDbEnvironment implements AutoCloseable {
     public record DatabaseHandle(Connection connection, int queryTimeoutSeconds) {
         public QueryExecution executeWithDiagnostics(String sql) throws SQLException {
             var explainPlan = explain(sql);
-            var explainHtml = explainHtml(sql);
             for (int i = 0; i < timingWarmupRuns(); i++) {
                 execute(sql);
             }
@@ -90,7 +89,7 @@ public class TranslatedDbEnvironment implements AutoCloseable {
                 totalElapsedMs += (System.nanoTime() - startedAtNanos) / 1_000_000.0;
             }
 
-            return new QueryExecution(rows, totalElapsedMs / measuredRuns, explainPlan, explainHtml);
+            return new QueryExecution(rows, totalElapsedMs / measuredRuns, explainPlan);
         }
 
         public List<List<Object>> execute(String sql) throws SQLException {
@@ -120,17 +119,6 @@ public class TranslatedDbEnvironment implements AutoCloseable {
             }
         }
 
-        private String explainHtml(String sql) {
-            try (var stmt = connection.createStatement()) {
-                stmt.setQueryTimeout(queryTimeoutSeconds);
-                try (var rs = stmt.executeQuery("EXPLAIN (FORMAT html) " + sql)) {
-                    return readExplainHtmlRows(rs);
-                }
-            } catch (SQLException _) {
-                return null;
-            }
-        }
-
         private static String readExplainRows(ResultSet rs) throws SQLException {
             var rows = new ArrayList<String>();
             var meta = rs.getMetaData();
@@ -150,46 +138,6 @@ public class TranslatedDbEnvironment implements AutoCloseable {
             }
 
             return String.join(System.lineSeparator(), rows);
-        }
-
-        private static String readExplainHtmlRows(ResultSet rs) throws SQLException {
-            var meta = rs.getMetaData();
-            var columnCount = meta.getColumnCount();
-
-            while (rs.next()) {
-                for (int i = 1; i <= columnCount; i++) {
-                    var value = rs.getObject(i);
-                    if (value == null) {
-                        continue;
-                    }
-
-                    var htmlDocument = extractHtmlDocument(value.toString());
-                    if (htmlDocument != null) {
-                        return htmlDocument;
-                    }
-                }
-            }
-
-            return null;
-        }
-
-        private static String extractHtmlDocument(String text) {
-            if (text == null || text.isBlank()) {
-                return null;
-            }
-
-            var lower = text.toLowerCase(Locale.ROOT);
-            var doctypeIndex = lower.indexOf("<!doctype html>");
-            if (doctypeIndex >= 0) {
-                return text.substring(doctypeIndex).trim();
-            }
-
-            var htmlIndex = lower.indexOf("<html");
-            if (htmlIndex >= 0) {
-                return text.substring(htmlIndex).trim();
-            }
-
-            return null;
         }
 
         private static int timingRuns() {
@@ -221,8 +169,7 @@ public class TranslatedDbEnvironment implements AutoCloseable {
     public record QueryExecution(
         List<List<Object>> rows,
         double executionTimeMs,
-        String explainPlan,
-        String explainHtml
+        String explainPlan
     ) {}
 
     private static void closeQuietly(AutoCloseable closeable) {

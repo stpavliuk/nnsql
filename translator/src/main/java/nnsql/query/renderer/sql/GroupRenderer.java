@@ -30,7 +30,8 @@ class GroupRenderer {
 
     void render(Group group, RenderContext ctx, String baseName, String inputBaseName) {
         var groupedDataName = "grouped_" + baseName;
-        if (!addDirectGlobalSumCTE(ctx, groupedDataName, group)) {
+        if (!addDirectGlobalSumCTE(ctx, groupedDataName, group)
+            && !addDirectSingleTableFilteredGroupCTE(ctx, groupedDataName, group)) {
             addGroupedDataCTE(ctx, groupedDataName, inputBaseName, group);
         }
         addIdCTE(ctx, baseName, groupedDataName);
@@ -80,6 +81,98 @@ class GroupRenderer {
         }
 
         ctx.addCTE(groupedDataName, ps);
+    }
+
+    private boolean addDirectSingleTableFilteredGroupCTE(
+        RenderContext ctx,
+        String groupedDataName,
+        Group group
+    ) {
+        if (!dialect.optimizeSingleTableFilteredGroups()
+            || group.groupingAttributes().isEmpty()
+            || group.aggregates().isEmpty()
+            || !(group.input() instanceof Filter filter)
+            || !(filter.input() instanceof Product product)
+            || product.relations().size() != 1
+            || !product.joinPredicates().isEmpty()
+            || !(product.relations().getFirst() instanceof Relation.Table relation)) {
+            return false;
+        }
+
+        var filterColumns = ExpressionSqlRenderer.collectColumnsFromCondition(filter.condition());
+        if (filterColumns.isEmpty()
+            || !allAttributesBelongToRelation(filterColumns, relation)
+            || !canRenderDirectCondition(filter.condition())) {
+            return false;
+        }
+
+        if (group.aggregates().stream().map(IRExpression.Aggregate::argument).anyMatch(argument ->
+            !canRenderDirectExpression(argument))) {
+            return false;
+        }
+
+        var requiredColumns = new LinkedHashSet<String>();
+        requiredColumns.addAll(filterColumns);
+        requiredColumns.addAll(group.groupingAttributes());
+        group.aggregates().stream()
+            .map(IRExpression.Aggregate::argument)
+            .map(ExpressionSqlRenderer::collectColumns)
+            .forEach(requiredColumns::addAll);
+
+        if (requiredColumns.isEmpty() || !allAttributesBelongToRelation(new ArrayList<>(requiredColumns), relation)) {
+            return false;
+        }
+
+        var aliases = new LinkedHashMap<String, String>();
+        var columns = new ArrayList<>(requiredColumns);
+        for (int i = 0; i < columns.size(); i++) {
+            aliases.put(columns.get(i), "direct_group_attr_" + i);
+        }
+
+        var anchorColumn = filterColumns.getFirst();
+        var anchorAlias = aliases.get(anchorColumn);
+        var ps = new PlainSelect();
+        ps.setFromItem(tableAs(attrTable(relation.tableName(), unqualifiedAttribute(anchorColumn, relation)), anchorAlias));
+        ps.addSelectItem(groupRepresentativeId(column(anchorAlias, "id"), group), new Alias("id", true));
+
+        var joins = new ArrayList<Join>();
+        for (var columnName : columns) {
+            if (columnName.equals(anchorColumn)) {
+                continue;
+            }
+            var alias = aliases.get(columnName);
+            joins.add(leftJoin(
+                tableAs(attrTable(relation.tableName(), unqualifiedAttribute(columnName, relation)), alias),
+                new EqualsTo(column(alias, "id"), column(anchorAlias, "id"))
+            ));
+        }
+        if (!joins.isEmpty()) {
+            ps.setJoins(joins);
+        }
+
+        var predicate = renderDirectCondition(filter.condition(), aliases);
+        if (predicate.isNone()) {
+            return false;
+        }
+        ps.setWhere(predicate.get());
+
+        var groupingProjections = java.util.stream.IntStream.range(0, group.groupingAttributes().size())
+            .mapToObj(index -> directGroupingProjection(group.groupingAttributes().get(index), aliases, index))
+            .toList();
+        for (var projection : groupingProjections) {
+            ps.addSelectItem(projection.presentExpr(), new Alias(projection.presentAlias(), true));
+            ps.addSelectItem(projection.valueExpr(), new Alias(projection.valueAlias(), true));
+            ps.addGroupByColumnReference(projection.valueExpr());
+        }
+
+        for (var aggregate : group.aggregates()) {
+            var aggregateFunction = fn(aggregate.function(), renderDirectExpression(aggregate.argument(), aliases));
+            aggregateFunction.setDistinct(aggregate.distinct());
+            ps.addSelectItem(aggregateFunction, new Alias(aggregate.alias(), true));
+        }
+
+        ctx.addCTE(groupedDataName, ps);
+        return true;
     }
 
     private boolean addDirectGlobalSumCTE(
@@ -199,6 +292,33 @@ class GroupRenderer {
         return Option.some(conjunction ? andAll(rendered) : orAll(rendered));
     }
 
+    private boolean canRenderDirectCondition(Condition condition) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, _) ->
+                canRenderDirectExpression(left) && canRenderDirectExpression(right);
+            case Condition.Like(var left, var pattern, _) ->
+                canRenderDirectExpression(left) && canRenderDirectExpression(pattern);
+            case Condition.And(var operands) ->
+                operands.stream().allMatch(this::canRenderDirectCondition);
+            case Condition.Or(var operands) ->
+                operands.stream().allMatch(this::canRenderDirectCondition);
+            case Condition.Not(var operand) -> canRenderDirectCondition(operand);
+            case Condition.IsNull _, Condition.Exists _, Condition.InSubquery _ -> false;
+        };
+    }
+
+    private boolean canRenderDirectExpression(IRExpression expression) {
+        return switch (expression) {
+            case IRExpression.ColumnRef _, IRExpression.Literal _ -> true;
+            case IRExpression.BinaryOp(var left, _, var right) ->
+                canRenderDirectExpression(left) && canRenderDirectExpression(right);
+            case IRExpression.Cast(var inner, _) -> canRenderDirectExpression(inner);
+            case IRExpression.FunctionCall(_, var arguments) ->
+                arguments.stream().allMatch(this::canRenderDirectExpression);
+            case IRExpression.CaseWhen _, IRExpression.Aggregate _, IRExpression.ScalarSubquery _ -> false;
+        };
+    }
+
     private Expression renderDirectExpression(
         IRExpression expression,
         LinkedHashMap<String, String> aliases
@@ -206,12 +326,7 @@ class GroupRenderer {
         return switch (expression) {
             case IRExpression.ColumnRef(var columnName) -> column(aliases.get(columnName), "v");
             case IRExpression.Literal literal -> literal(literal);
-            case IRExpression.BinaryOp(var left, var operator, var right) ->
-                arithmetic(
-                    renderDirectExpression(left, aliases),
-                    operator.toSql(),
-                    renderDirectExpression(right, aliases)
-                );
+            case IRExpression.BinaryOp binaryOp -> renderDirectBinaryOp(binaryOp, aliases);
             case IRExpression.Cast(var inner, var targetType) ->
                 new CastExpression("CAST", renderDirectExpression(inner, aliases), targetType);
             case IRExpression.FunctionCall(var name, var arguments) ->
@@ -226,11 +341,69 @@ class GroupRenderer {
         };
     }
 
+    private Expression renderDirectBinaryOp(
+        IRExpression.BinaryOp binaryOp,
+        LinkedHashMap<String, String> aliases
+    ) {
+        var left = renderDirectExpression(binaryOp.left(), aliases);
+        var right = renderDirectExpression(binaryOp.right(), aliases);
+
+        if (needsParentheses(binaryOp.operator(), binaryOp.left(), false)) {
+            left = paren(left);
+        }
+        if (needsParentheses(binaryOp.operator(), binaryOp.right(), true)) {
+            right = paren(right);
+        }
+
+        return arithmetic(left, binaryOp.operator().toSql(), right);
+    }
+
+    private boolean needsParentheses(
+        IRExpression.ArithmeticOperator parentOperator,
+        IRExpression childExpression,
+        boolean isRightChild
+    ) {
+        if (!(childExpression instanceof IRExpression.BinaryOp(_, var childOperator, _))) {
+            return false;
+        }
+
+        var parentPrecedence = precedence(parentOperator);
+        var childPrecedence = precedence(childOperator);
+
+        if (childPrecedence < parentPrecedence) {
+            return true;
+        }
+        if (childPrecedence > parentPrecedence || !isRightChild) {
+            return false;
+        }
+
+        return switch (parentOperator) {
+            case IRExpression.Add _ -> false;
+            case IRExpression.Subtract _ -> true;
+            case IRExpression.Multiply _ -> childOperator instanceof IRExpression.Divide;
+            case IRExpression.Divide _ -> true;
+        };
+    }
+
+    private int precedence(IRExpression.ArithmeticOperator operator) {
+        return switch (operator) {
+            case IRExpression.Add _, IRExpression.Subtract _ -> 1;
+            case IRExpression.Multiply _, IRExpression.Divide _ -> 2;
+        };
+    }
+
     private String unqualifiedAttribute(String qualifiedAttribute, Relation.Table relation) {
         var prefix = relation.alias() + "_";
         return qualifiedAttribute.startsWith(prefix)
             ? qualifiedAttribute.substring(prefix.length())
             : qualifiedAttribute;
+    }
+
+    private boolean allAttributesBelongToRelation(List<String> attributes, Relation.Table relation) {
+        var sourceAttributes = new java.util.HashSet<>(relation.attributes());
+        return attributes.stream()
+            .map(attribute -> unqualifiedAttribute(attribute, relation))
+            .allMatch(sourceAttributes::contains);
     }
 
     private void addIdCTE(RenderContext ctx, String baseName, String groupedDataName) {
@@ -300,6 +473,26 @@ class GroupRenderer {
             "group_key_%d_value".formatted(index),
             presentExpr,
             column(attrTbl, "v")
+        );
+    }
+
+    private GroupingProjection directGroupingProjection(
+        String attribute,
+        LinkedHashMap<String, String> aliases,
+        int index
+    ) {
+        var attributeAlias = aliases.get(attribute);
+        var presentExpr = fn("MAX", new CaseExpression()
+            .withWhenClauses(List.of(new WhenClause(
+                new IsNullExpression().withLeftExpression(column(attributeAlias, "id")),
+                new LongValue(0)
+            )))
+            .withElseExpression(new LongValue(1)));
+        return new GroupingProjection(
+            "group_key_%d_present".formatted(index),
+            "group_key_%d_value".formatted(index),
+            presentExpr,
+            column(attributeAlias, "v")
         );
     }
 

@@ -30,12 +30,10 @@ class TpchHtmlReportTest {
                 "select 1",
                 12.345d,
                 "source explain",
-                null,
                 1,
                 "select 1 translated",
                 34.567d,
                 "translated explain",
-                null,
                 1,
                 true,
                 null
@@ -46,12 +44,10 @@ class TpchHtmlReportTest {
                 "select 2",
                 45.678d,
                 "source explain",
-                null,
                 1,
                 "select 2 translated",
                 23.456d,
                 "translated explain",
-                null,
                 1,
                 true,
                 null
@@ -70,6 +66,8 @@ class TpchHtmlReportTest {
             assertTrue(html.contains("Original: 12.345 ms"));
             assertTrue(html.contains("Translated: 34.567 ms"));
             assertTrue(html.contains("Translated is 2.80x slower"));
+            assertTrue(html.contains("<pre>source explain</pre>"));
+            assertTrue(html.contains("<pre>translated explain</pre>"));
         } finally {
             entries.clear();
             if (originalReportPath == null) {
@@ -93,8 +91,6 @@ class TpchHtmlReportTest {
                 "chart-test-failed",
                 false,
                 "select broken",
-                null,
-                null,
                 null,
                 null,
                 null,

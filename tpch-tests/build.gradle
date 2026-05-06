@@ -54,6 +54,9 @@ tasks.named('test') {
     if (System.getProperty('nnsql.tpch.jdbcPassword')) {
         systemProperty 'nnsql.tpch.jdbcPassword', System.getProperty('nnsql.tpch.jdbcPassword')
     }
+    if (System.getProperty('nnsql.tpch.reportPath')) {
+        systemProperty 'nnsql.tpch.reportPath', System.getProperty('nnsql.tpch.reportPath')
+    }
 }
 
 tasks.named('build') {
@@ -83,7 +86,8 @@ tasks.register('tpchDebug', JavaExec) {
         'nnsql.tpch.queryTimeoutSeconds',
         'nnsql.tpch.jdbcUrl',
         'nnsql.tpch.jdbcUser',
-        'nnsql.tpch.jdbcPassword'
+        'nnsql.tpch.jdbcPassword',
+        'nnsql.tpch.reportPath'
     ].each { propertyName ->
         if (System.getProperty(propertyName)) {
             systemProperty propertyName, System.getProperty(propertyName)

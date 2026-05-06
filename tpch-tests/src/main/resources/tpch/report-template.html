@@ -104,54 +104,6 @@
     .report-card details.failure pre {
       color: #fecaca;
     }
-    .report-card .tree-pane {
-      padding: 0.75rem 1rem 1rem;
-      background: rgba(0, 0, 0, 0.24);
-      border-top: 1px solid rgba(255, 255, 255, 0.06);
-    }
-    .report-card .tree-toolbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 0.75rem;
-      flex-wrap: wrap;
-      margin-bottom: 0.5rem;
-    }
-    .report-card .tree-controls {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-    .report-card .tree-zoom-label {
-      min-width: 3.2rem;
-      text-align: center;
-      font-variant-numeric: tabular-nums;
-    }
-    .report-card .tree-iframe {
-      width: 100%;
-      min-height: 420px;
-      border: 1px solid rgba(255, 255, 255, 0.14);
-      border-radius: 0.5rem;
-      background: #ffffff;
-    }
-    .report-card .tree-pane:fullscreen {
-      padding: 0.5rem;
-      background: #0b1020;
-    }
-    .report-card .tree-pane:fullscreen .tree-toolbar {
-      position: fixed;
-      top: 0.75rem;
-      left: 0.75rem;
-      right: 0.75rem;
-      z-index: 10;
-      margin-bottom: 0;
-    }
-    .report-card .tree-pane:fullscreen .tree-iframe {
-      min-height: calc(100vh - 1rem);
-      height: calc(100vh - 1rem);
-      border: 0;
-      border-radius: 0.25rem;
-    }
   </style>
 </head>
 <body>
@@ -232,33 +184,10 @@
         {{#each sections}}
           <details{{#if detailsClass}} class="{{detailsClass}}"{{/if}}{{#if open}} open{{/if}}>
             <summary>{{title}}</summary>
-            {{#if iframeSrc}}
-              <div class="tree-pane">
-                <div class="tree-toolbar">
-                  <div class="tree-controls">
-                    <button type="button" class="btn btn-sm btn-outline-secondary tree-zoom-out">-</button>
-                    <button type="button" class="btn btn-sm btn-outline-secondary tree-zoom-in">+</button>
-                    <button type="button" class="btn btn-sm btn-outline-secondary tree-zoom-reset">Reset</button>
-                    <span class="badge text-bg-secondary tree-zoom-label">78%</span>
-                  </div>
-                  <button type="button" class="btn btn-sm btn-outline-info tree-fullscreen-btn">Fullscreen</button>
-                </div>
-                <iframe
-                  class="tree-iframe"
-                  loading="lazy"
-                  referrerpolicy="no-referrer"
-                  allowfullscreen
-                  allow="fullscreen"
-                  sandbox="allow-same-origin allow-scripts"
-                  src="{{{iframeSrc}}}"
-                  title="{{title}}"></iframe>
-              </div>
+            {{#if sqlContent}}
+              <pre><code class="language-sql" data-lang="sql">{{content}}</code></pre>
             {{else}}
-              {{#if sqlContent}}
-                <pre><code class="language-sql" data-lang="sql">{{content}}</code></pre>
-              {{else}}
-                <pre>{{content}}</pre>
-              {{/if}}
+              <pre>{{content}}</pre>
             {{/if}}
           </details>
         {{/each}}
@@ -377,100 +306,6 @@
         );
       }
 
-      const DEFAULT_ZOOM = 0.78;
-      const MIN_ZOOM = 0.35;
-      const MAX_ZOOM = 2.00;
-      const ZOOM_STEP = 0.08;
-      const treePanes = document.querySelectorAll(".tree-pane");
-
-      const clampZoom = (value) => {
-        if (!Number.isFinite(value)) {
-          return DEFAULT_ZOOM;
-        }
-        return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
-      };
-
-      const readZoom = (pane) => clampZoom(Number.parseFloat(pane.dataset.zoom || `${DEFAULT_ZOOM}`));
-
-      const updateZoomLabel = (pane, zoom) => {
-        pane.dataset.zoom = zoom.toFixed(2);
-        const label = pane.querySelector(".tree-zoom-label");
-        if (label) {
-          label.textContent = `${Math.round(zoom * 100)}%`;
-        }
-      };
-
-      const sendZoom = (pane, zoom) => {
-        const iframe = pane.querySelector(".tree-iframe");
-        if (!iframe || !iframe.contentWindow) {
-          return;
-        }
-        iframe.contentWindow.postMessage({
-          type: "nnsql-tree-zoom",
-          zoom
-        }, "*");
-      };
-
-      const applyZoom = (pane, zoom) => {
-        const normalized = clampZoom(zoom);
-        updateZoomLabel(pane, normalized);
-        sendZoom(pane, normalized);
-      };
-
-      for (const pane of treePanes) {
-        updateZoomLabel(pane, DEFAULT_ZOOM);
-
-        const zoomOut = pane.querySelector(".tree-zoom-out");
-        const zoomIn = pane.querySelector(".tree-zoom-in");
-        const zoomReset = pane.querySelector(".tree-zoom-reset");
-        const iframe = pane.querySelector(".tree-iframe");
-
-        zoomOut?.addEventListener("click", () => applyZoom(pane, readZoom(pane) - ZOOM_STEP));
-        zoomIn?.addEventListener("click", () => applyZoom(pane, readZoom(pane) + ZOOM_STEP));
-        zoomReset?.addEventListener("click", () => applyZoom(pane, DEFAULT_ZOOM));
-        iframe?.addEventListener("load", () => sendZoom(pane, readZoom(pane)));
-      }
-
-      window.addEventListener("message", (event) => {
-        const data = event.data;
-        if (!data || (data.type !== "nnsql-tree-ready" && data.type !== "nnsql-tree-zoom-state")) {
-          return;
-        }
-
-        const reportedZoom = clampZoom(
-          typeof data.zoom === "number" ? data.zoom : Number.parseFloat(data.zoom)
-        );
-
-        for (const pane of treePanes) {
-          const iframe = pane.querySelector(".tree-iframe");
-          if (iframe && iframe.contentWindow === event.source) {
-            updateZoomLabel(pane, reportedZoom);
-            break;
-          }
-        }
-      });
-
-      const fullscreenButtons = document.querySelectorAll(".tree-fullscreen-btn");
-      for (const button of fullscreenButtons) {
-        button.addEventListener("click", () => {
-          const pane = button.closest(".tree-pane");
-          if (!pane) {
-            return;
-          }
-          if (document.fullscreenElement === pane) {
-            document.exitFullscreen();
-            return;
-          }
-          pane.requestFullscreen();
-        });
-      }
-
-      document.addEventListener("fullscreenchange", () => {
-        for (const button of fullscreenButtons) {
-          const pane = button.closest(".tree-pane");
-          button.textContent = document.fullscreenElement === pane ? "Exit Fullscreen" : "Fullscreen";
-        }
-      });
     })();
   </script>
 </body>

@@ -105,8 +105,9 @@ Useful TPCH test properties:
 - `-Dnnsql.tpch.jdbcPassword=<password>` overrides the Postgres JDBC password.
 - `-Dnnsql.tpch.reportPath=<path>` overrides the HTML report output path.
 
-By default, the TPCH HTML report is written to
-`build/reports/tpch/query-report.html`.
+By default, each TPCH run writes a timestamped HTML report under
+`build/reports/tpch/`, for example `query-report-20260506-153012-123.html`,
+and also refreshes `build/reports/tpch/query-report.html` as the latest report.
 
 ## Current limitations
 

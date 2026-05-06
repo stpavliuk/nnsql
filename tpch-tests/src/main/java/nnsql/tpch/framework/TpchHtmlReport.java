@@ -8,100 +8,21 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Locale;
 
 public final class TpchHtmlReport {
 
     private static final Object LOCK = new Object();
     private static final List<QueryReportEntry> ENTRIES = new ArrayList<>();
-    private static final Path DEFAULT_REPORT_PATH = Path.of("build", "reports", "tpch", "query-report.html");
+    private static final DateTimeFormatter REPORT_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
+    private static final OffsetDateTime REPORT_STARTED_AT = OffsetDateTime.now();
+    private static final Path DEFAULT_REPORT_DIRECTORY = Path.of("build", "reports", "tpch");
+    private static final Path DEFAULT_LATEST_REPORT_PATH = DEFAULT_REPORT_DIRECTORY.resolve("query-report.html");
     private static final String REPORT_TEMPLATE_RESOURCE = "tpch/report-template.html";
     private static final Template REPORT_TEMPLATE = loadTemplate();
-    private static final double TREE_DEFAULT_ZOOM = 0.78;
-    private static final String TREE_COMPACT_STYLE = """
-        <style id="nnsql-tree-compact-style">
-          body {
-            margin: 0;
-            padding: 8px;
-            overflow: auto;
-          }
-          .tf-tree .tf-nc { min-width: 120px; }
-          .title {
-            padding: 6px !important;
-            font-size: 13px !important;
-          }
-          .sub-title {
-            font-size: 12px !important;
-            padding-top: 4px !important;
-          }
-          .value {
-            margin: 2px 0 4px 0 !important;
-            font-size: 11px !important;
-          }
-        </style>
-        """;
-    private static final String TREE_COMPACT_RUNTIME_SCRIPT = """
-        <script id="nnsql-tree-compact-runtime">
-        (() => {
-          const defaultZoom = %s;
-          const minZoom = 0.35;
-          const maxZoom = 2.00;
-          let currentZoom = defaultZoom;
-
-          const clampZoom = (value) => {
-            if (!Number.isFinite(value)) {
-              return defaultZoom;
-            }
-            return Math.min(maxZoom, Math.max(minZoom, value));
-          };
-
-          const applyZoom = (value) => {
-            currentZoom = clampZoom(value);
-
-            if (window.CSS && CSS.supports("zoom", "1")) {
-              document.documentElement.style.zoom = String(currentZoom);
-              document.body.style.transform = "";
-              document.body.style.transformOrigin = "";
-              document.body.style.width = "";
-              return;
-            }
-
-            document.body.style.transform = "scale(" + currentZoom + ")";
-            document.body.style.transformOrigin = "top left";
-            document.body.style.width = (100 / currentZoom) + "%%";
-          };
-
-          applyZoom(defaultZoom);
-
-          window.addEventListener("message", (event) => {
-            const data = event.data;
-            if (!data || data.type !== "nnsql-tree-zoom") {
-              return;
-            }
-
-            applyZoom(typeof data.zoom === "number" ? data.zoom : Number.parseFloat(data.zoom));
-
-            if (event.source && typeof event.source.postMessage === "function") {
-              event.source.postMessage({
-                type: "nnsql-tree-zoom-state",
-                zoom: currentZoom
-              }, "*");
-            }
-          });
-
-          if (window.parent && window.parent !== window) {
-            window.parent.postMessage({
-              type: "nnsql-tree-ready",
-              zoom: currentZoom
-            }, "*");
-          }
-        })();
-        </script>
-        """.formatted(String.format(Locale.ROOT, "%.2f", TREE_DEFAULT_ZOOM));
 
     private TpchHtmlReport() {}
 
@@ -125,19 +46,39 @@ public final class TpchHtmlReport {
     private static void writeHtmlReport() {
         var reportPath = reportPath();
         try {
+            var html = renderHtml();
             Files.createDirectories(reportPath.getParent());
-            Files.writeString(reportPath, renderHtml(), StandardCharsets.UTF_8);
+            Files.writeString(reportPath, html, StandardCharsets.UTF_8);
+            writeLatestHtmlReport(reportPath, html);
         } catch (IOException e) {
             System.err.println("Failed to write TPCH HTML report: " + e.getMessage());
         }
     }
 
-    private static Path reportPath() {
-        var configured = System.getProperty("nnsql.tpch.reportPath");
-        if (configured == null || configured.isBlank()) {
-            return DEFAULT_REPORT_PATH.toAbsolutePath().normalize();
+    private static void writeLatestHtmlReport(Path reportPath, String html) throws IOException {
+        if (isReportPathConfigured()) {
+            return;
         }
-        return Path.of(configured).toAbsolutePath().normalize();
+
+        var latestReportPath = DEFAULT_LATEST_REPORT_PATH.toAbsolutePath().normalize();
+        if (latestReportPath.equals(reportPath)) {
+            return;
+        }
+
+        Files.writeString(latestReportPath, html, StandardCharsets.UTF_8);
+    }
+
+    private static Path reportPath() {
+        if (!isReportPathConfigured()) {
+            var timestamp = REPORT_TIMESTAMP_FORMAT.format(REPORT_STARTED_AT);
+            return DEFAULT_REPORT_DIRECTORY.resolve("query-report-" + timestamp + ".html").toAbsolutePath().normalize();
+        }
+        return Path.of(System.getProperty("nnsql.tpch.reportPath")).toAbsolutePath().normalize();
+    }
+
+    private static boolean isReportPathConfigured() {
+        var configured = System.getProperty("nnsql.tpch.reportPath");
+        return configured != null && !configured.isBlank();
     }
 
     private static String renderHtml() {
@@ -147,10 +88,11 @@ public final class TpchHtmlReport {
         var passed = sortedEntries.stream().filter(QueryReportEntry::success).count();
         var failed = sortedEntries.size() - passed;
         var timingChart = toTimingChartModel(sortedEntries);
+        var reportPath = reportPath();
 
         var model = new ReportModel(
-            OffsetDateTime.now().toString(),
-            reportPath().toString(),
+            REPORT_STARTED_AT.toString(),
+            reportPath.toString(),
             sortedEntries.size(),
             passed,
             failed,
@@ -181,8 +123,6 @@ public final class TpchHtmlReport {
 
     private static EntryModel toEntryModel(QueryReportEntry entry) {
         var sections = new ArrayList<SectionModel>();
-        var sourceExplainTree = toHtmlDataUri(entry.sourceExplainHtml());
-        var translatedExplainTree = toHtmlDataUri(entry.translatedExplainHtml());
         var sourceExecution = displayDuration(entry.sourceExecutionMs());
         var translatedExecution = displayDuration(entry.translatedExecutionMs());
         var timingComparison = describeTimingComparison(entry.sourceExecutionMs(), entry.translatedExecutionMs());
@@ -192,32 +132,28 @@ public final class TpchHtmlReport {
             defaultText(entry.sourceQuery()),
             true,
             "",
-            true,
-            null
+            true
         ));
         sections.add(new SectionModel(
             "Source EXPLAIN",
-            sourceExplainTree == null ? "(not available)" : "",
+            defaultText(entry.sourceExplain()),
             false,
             "",
-            false,
-            sourceExplainTree
+            false
         ));
         sections.add(new SectionModel(
             "Translated Query - " + translatedExecution,
             defaultText(entry.translatedQuery()),
             true,
             "",
-            true,
-            null
+            true
         ));
         sections.add(new SectionModel(
             "Translated EXPLAIN",
-            translatedExplainTree == null ? "(not available)" : "",
+            defaultText(entry.translatedExplain()),
             false,
             "",
-            false,
-            translatedExplainTree
+            false
         ));
         if (!entry.success()) {
             sections.add(new SectionModel(
@@ -225,8 +161,7 @@ public final class TpchHtmlReport {
                 defaultText(entry.failureMessage()),
                 true,
                 "failure",
-                false,
-                null
+                false
             ));
         }
 
@@ -314,41 +249,16 @@ public final class TpchHtmlReport {
         return value;
     }
 
-    private static String toHtmlDataUri(String htmlDocument) {
-        if (htmlDocument == null || htmlDocument.isBlank()) {
-            return null;
-        }
-
-        var compactHtml = compactTreeHtml(htmlDocument);
-        var encoded = Base64.getEncoder().encodeToString(compactHtml.getBytes(StandardCharsets.UTF_8));
-        return "data:text/html;charset=utf-8;base64," + encoded;
-    }
-
-    private static String compactTreeHtml(String htmlDocument) {
-        var lower = htmlDocument.toLowerCase(Locale.ROOT);
-        var headCloseIndex = lower.indexOf("</head>");
-        if (headCloseIndex >= 0) {
-            return htmlDocument.substring(0, headCloseIndex)
-                + TREE_COMPACT_STYLE
-                + TREE_COMPACT_RUNTIME_SCRIPT
-                + htmlDocument.substring(headCloseIndex);
-        }
-
-        return TREE_COMPACT_STYLE + htmlDocument + TREE_COMPACT_RUNTIME_SCRIPT;
-    }
-
     public record QueryReportEntry(
         String queryName,
         boolean orderSensitive,
         String sourceQuery,
         Double sourceExecutionMs,
         String sourceExplain,
-        String sourceExplainHtml,
         Integer sourceRowCount,
         String translatedQuery,
         Double translatedExecutionMs,
         String translatedExplain,
-        String translatedExplainHtml,
         Integer translatedRowCount,
         boolean success,
         String failureMessage
@@ -398,7 +308,6 @@ public final class TpchHtmlReport {
         String content,
         boolean open,
         String detailsClass,
-        boolean sqlContent,
-        String iframeSrc
+        boolean sqlContent
     ) {}
 }

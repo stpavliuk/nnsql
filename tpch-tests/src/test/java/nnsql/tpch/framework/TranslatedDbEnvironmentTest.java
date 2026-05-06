@@ -13,7 +13,6 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class TranslatedDbEnvironmentTest {
@@ -37,7 +36,6 @@ class TranslatedDbEnvironmentTest {
             assertEquals(4L, ((Number) execution.rows().getFirst().getFirst()).longValue());
             assertTrue(execution.executionTimeMs() >= 0.0d);
             assertEquals("QUERY PLAN", execution.explainPlan());
-            assertNull(execution.explainHtml());
             assertEquals(4, queryExecutions.get());
         } finally {
             restoreProperty("nnsql.tpch.timingRuns", originalTimingRuns);
@@ -80,9 +78,6 @@ class TranslatedDbEnvironmentTest {
     }
 
     private static ResultSet executeQuery(String sql, AtomicInteger queryExecutions) throws SQLException {
-        if (sql.startsWith("EXPLAIN (FORMAT html)")) {
-            throw new SQLException("html explain not available");
-        }
         if (sql.startsWith("EXPLAIN ")) {
             return resultSet(List.of(List.of("QUERY PLAN")));
         }

@@ -35,6 +35,10 @@ public interface SqlDialect {
         return false;
     }
 
+    default boolean optimizeSingleTableFilteredGroups() {
+        return false;
+    }
+
     static SqlDialect duckDb() {
         return new SqlDialect() {
             @Override
@@ -94,6 +98,11 @@ public interface SqlDialect {
 
             @Override
             public boolean useLateralAttributeLookups() {
+                return true;
+            }
+
+            @Override
+            public boolean optimizeSingleTableFilteredGroups() {
                 return true;
             }
         };
