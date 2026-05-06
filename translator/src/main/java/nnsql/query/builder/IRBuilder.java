@@ -926,20 +926,12 @@ public class IRBuilder {
 
         List<String> groupingAttributes;
         if (select.getGroupBy() != null) {
-            var groupByExprs = new ArrayList<String>();
-            for (var expr : select.getGroupBy().getGroupByExpressionList()) {
-                if (expr instanceof Column col) {
-                    groupByExprs.add(
-                        resolveGroupByAttribute(
-                            col,
-                            availableAttrs,
-                            selectAliasSourceAttributes,
-                            selectAliasUnsupportedExpressionTypes
-                        )
-                    );
-                }
-            }
-            groupingAttributes = groupByExprs;
+            groupingAttributes = resolveGroupByAttributes(
+                select,
+                availableAttrs,
+                selectAliasSourceAttributes,
+                selectAliasUnsupportedExpressionTypes
+            );
         } else {
             groupingAttributes = new ArrayList<>();
         }
@@ -1113,20 +1105,12 @@ public class IRBuilder {
 
         List<String> groupingAttributes;
         if (select.getGroupBy() != null) {
-            var groupByExprs = new ArrayList<String>();
-            for (var expr : select.getGroupBy().getGroupByExpressionList()) {
-                if (expr instanceof Column col) {
-                    groupByExprs.add(
-                        resolveGroupByAttribute(
-                            col,
-                            availableAttrs,
-                            selectAliasSourceAttributes,
-                            selectAliasUnsupportedExpressionTypes
-                        )
-                    );
-                }
-            }
-            groupingAttributes = groupByExprs;
+            groupingAttributes = resolveGroupByAttributes(
+                select,
+                availableAttrs,
+                selectAliasSourceAttributes,
+                selectAliasUnsupportedExpressionTypes
+            );
         } else {
             groupingAttributes = new ArrayList<>();
         }
@@ -1218,14 +1202,58 @@ public class IRBuilder {
         }
     }
 
-    private String resolveGroupByAttribute(
-        Column column,
+    private List<String> resolveGroupByAttributes(
+        PlainSelect select,
         List<String> availableAttrs,
         Map<String, String> selectAliasSourceAttributes,
         Map<String, String> selectAliasUnsupportedExpressionTypes
     ) {
-        var columnRef = toColumnRef(column).columnName();
+        var groupByAttributes = new ArrayList<String>();
+        for (var expression : select.getGroupBy().getGroupByExpressionList()) {
+            if (!(expression instanceof Expression groupByExpression)) {
+                throw new UnsupportedOperationException(
+                    "Unsupported GROUP BY item: " + expression
+                );
+            }
+            groupByAttributes.add(resolveGroupByExpression(
+                groupByExpression,
+                availableAttrs,
+                selectAliasSourceAttributes,
+                selectAliasUnsupportedExpressionTypes
+            ));
+        }
+        return groupByAttributes;
+    }
 
+    private String resolveGroupByExpression(
+        Expression expression,
+        List<String> availableAttrs,
+        Map<String, String> selectAliasSourceAttributes,
+        Map<String, String> selectAliasUnsupportedExpressionTypes
+    ) {
+        var irExpression = toExpression(expression);
+        return switch (irExpression) {
+            case IRExpression.ColumnRef(var columnRef) -> resolveGroupByAttribute(
+                columnRef,
+                availableAttrs,
+                selectAliasSourceAttributes,
+                selectAliasUnsupportedExpressionTypes
+            );
+            default -> throw new UnsupportedOperationException(
+                (
+                    "GROUP BY expression '%s' resolves to unsupported %s expression; " +
+                        "only simple column references and simple column aliases are supported"
+                ).formatted(expression, irExpression.getClass().getSimpleName())
+            );
+        };
+    }
+
+    private String resolveGroupByAttribute(
+        String columnRef,
+        List<String> availableAttrs,
+        Map<String, String> selectAliasSourceAttributes,
+        Map<String, String> selectAliasUnsupportedExpressionTypes
+    ) {
         try {
             return AttributeResolver.resolve(columnRef, availableAttrs);
         } catch (IllegalArgumentException error) {

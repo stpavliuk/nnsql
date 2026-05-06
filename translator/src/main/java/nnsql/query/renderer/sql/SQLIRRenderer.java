@@ -12,6 +12,7 @@ import nnsql.query.ir.*;
 import nnsql.query.renderer.*;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 
@@ -91,10 +92,15 @@ public class SQLIRRenderer implements IRRenderer {
                     && input instanceof Filter filter
                     && filter.input() instanceof Product product
                     && product.relations().size() == 2
-                    && product.relations().stream().map(Relation::alias).toList().containsAll(List.of("lineitem", "part")) ->
+                    && productHasAliases(product, "lineitem", "part") ->
                 true;
             default -> false;
         };
+    }
+
+    private boolean productHasAliases(Product product, String... aliases) {
+        return new HashSet<>(product.relations().stream().map(Relation::alias).toList())
+            .containsAll(List.of(aliases));
     }
 
     private String renderNodeForSubquery(IRNode node, RenderContext ctx) {

@@ -832,6 +832,15 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testGroupByExpressionFailure() {
+        var exception = assertThrows(UnsupportedOperationException.class, () ->
+            translator.translate("SELECT R.A + R.B AS total, COUNT(*) AS cnt FROM R GROUP BY R.A + R.B")
+        );
+        assertTrue(exception.getMessage().contains("GROUP BY expression"));
+        assertTrue(exception.getMessage().contains("only simple column references"));
+    }
+
+    @Test
     void testCountWithArithmeticExpression() {
         var sql = normalizeWhitespace(translator.translate(
             "SELECT COUNT(R.A + R.B) AS cnt FROM R"
@@ -851,6 +860,7 @@ class QueryTranslationTest {
             "SELECT COUNT(*) AS cnt FROM R"
         ));
         assertTrue(ungroupedSql.contains("COUNT(1)"));
+        assertTrue(ungroupedSql.contains("COALESCE(MIN(product_0_id.id), 0) AS id"));
         assertTrue(ungroupedSql.contains("group_1_cnt"));
 
         var mixedSql = normalizeWhitespace(translator.translate(
@@ -990,6 +1000,22 @@ class QueryTranslationTest {
 
         assertTrue(sql.contains("CAST(MIN(CAST(product_0_id.id AS TEXT)) AS UUID) AS id"));
         assertFalse(sql.contains("MIN(product_0_id.id) AS id"));
+    }
+
+    @Test
+    void testPostgresCompatibleRendererUsesUuidGlobalAggregateId() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("R", List.of("A", "B"));
+
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            "SELECT COUNT(*) AS cnt FROM R"
+        ));
+
+        assertTrue(sql.contains(
+            "COALESCE(CAST(MIN(CAST(product_0_id.id AS TEXT)) AS UUID), "
+                + "CAST('00000000-0000-0000-0000-000000000000' AS UUID)) AS id"
+        ));
     }
 
     @Test

@@ -47,7 +47,7 @@ class GroupRenderer {
         var inputIdTbl = table(idTable(inputBaseName));
         var ps = new PlainSelect();
         ps.setFromItem(inputIdTbl);
-        ps.addSelectItem(dialect.representativeId(column(inputIdTbl, "id")), new Alias("id", true));
+        ps.addSelectItem(groupRepresentativeId(column(inputIdTbl, "id"), group), new Alias("id", true));
 
         var requiredColumns = new LinkedHashSet<>(group.groupingAttributes());
         group.aggregates().stream()
@@ -101,8 +101,9 @@ class GroupRenderer {
             return false;
         }
 
-        var requiredColumns = new LinkedHashSet<String>();
-        requiredColumns.addAll(ExpressionSqlRenderer.collectColumnsFromCondition(filter.condition()));
+        var requiredColumns = new LinkedHashSet<>(
+            ExpressionSqlRenderer.collectColumnsFromCondition(filter.condition())
+        );
         group.aggregates().stream()
             .map(IRExpression.Aggregate::argument)
             .map(ExpressionSqlRenderer::collectColumns)
@@ -121,7 +122,7 @@ class GroupRenderer {
         var anchorAlias = aliases.get(anchorColumn);
         var ps = new PlainSelect();
         ps.setFromItem(tableAs(attrTable(relation.tableName(), unqualifiedAttribute(anchorColumn, relation)), anchorAlias));
-        ps.addSelectItem(dialect.representativeId(column(anchorAlias, "id")), new Alias("id", true));
+        ps.addSelectItem(groupRepresentativeId(column(anchorAlias, "id"), group), new Alias("id", true));
 
         var joins = new ArrayList<Join>();
         for (var columnName : columns.subList(1, columns.size())) {
@@ -148,6 +149,13 @@ class GroupRenderer {
 
         ctx.addCTE(groupedDataName, ps);
         return true;
+    }
+
+    private Expression groupRepresentativeId(Expression inputIdExpression, Group group) {
+        var representativeId = dialect.representativeId(inputIdExpression);
+        return group.groupingAttributes().isEmpty()
+            ? fn("COALESCE", representativeId, dialect.globalAggregateGroupId())
+            : representativeId;
     }
 
     private Option<Expression> renderDirectCondition(

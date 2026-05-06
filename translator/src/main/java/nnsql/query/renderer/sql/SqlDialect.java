@@ -2,6 +2,7 @@ package nnsql.query.renderer.sql;
 
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.CastExpression;
+import net.sf.jsqlparser.expression.LongValue;
 import net.sf.jsqlparser.expression.StringValue;
 
 import java.util.List;
@@ -20,6 +21,10 @@ public interface SqlDialect {
 
     default Expression representativeId(Expression idExpression) {
         return fn("MIN", idExpression);
+    }
+
+    default Expression globalAggregateGroupId() {
+        return new LongValue(0);
     }
 
     default boolean materializeCommonTableExpressions() {
@@ -71,6 +76,15 @@ public interface SqlDialect {
             @Override
             public Expression representativeId(Expression idExpression) {
                 return new CastExpression("CAST", fn("MIN", new CastExpression("CAST", idExpression, "TEXT")), "UUID");
+            }
+
+            @Override
+            public Expression globalAggregateGroupId() {
+                return new CastExpression(
+                    "CAST",
+                    new StringValue("00000000-0000-0000-0000-000000000000"),
+                    "UUID"
+                );
             }
 
             @Override
