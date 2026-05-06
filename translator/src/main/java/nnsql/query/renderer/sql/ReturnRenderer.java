@@ -66,25 +66,39 @@ class ReturnRenderer {
 
         boolean hasCaseWhen = ExpressionSqlRenderer.containsCaseWhen(attr.source());
 
-        var idTbl = table(idTable(inputBaseName));
         var ps = new PlainSelect();
-        ps.addSelectItem(column(idTbl, "id"));
-
         var exprSql = ExpressionSqlRenderer.toSqlExpr(attr.source(), inputBaseName, dialect);
         ps.addSelectItem(exprSql, new Alias("v", true));
 
-        ps.setFromItem(idTbl);
-
         var joins = new ArrayList<Join>();
-        addComputedExprAttributeJoins(
-            inputBaseName,
-            columns,
-            column(idTbl, "id"),
-            hasCaseWhen,
-            Sql.NonCaseJoinMode.INNER_ON,
-            joins,
-            new ArrayList<>()
-        );
+        if (hasCaseWhen) {
+            var idTbl = table(idTable(inputBaseName));
+            ps.addSelectItem(column(idTbl, "id"));
+            ps.setFromItem(idTbl);
+            addComputedExprAttributeJoins(
+                inputBaseName,
+                columns,
+                column(idTbl, "id"),
+                true,
+                Sql.NonCaseJoinMode.INNER_ON,
+                joins,
+                new ArrayList<>()
+            );
+        } else {
+            var anchorColumn = columns.getFirst();
+            var anchorTbl = table(attrTable(inputBaseName, anchorColumn));
+            ps.addSelectItem(column(anchorTbl, "id"));
+            ps.setFromItem(anchorTbl);
+            addComputedExprAttributeJoins(
+                inputBaseName,
+                columns.stream().skip(1).toList(),
+                column(anchorTbl, "id"),
+                false,
+                Sql.NonCaseJoinMode.INNER_ON,
+                joins,
+                new ArrayList<>()
+            );
+        }
         ps.setJoins(joins);
 
         if (hasCaseWhen) {
