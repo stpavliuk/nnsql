@@ -3,6 +3,7 @@ package nnsql.query.optim;
 import nnsql.query.ir.Condition;
 import nnsql.util.Option;
 
+import java.util.ArrayList;
 import java.util.List;
 
 final class Conditions {
@@ -10,10 +11,17 @@ final class Conditions {
     }
 
     static List<Condition> conjunctionOperands(Condition condition) {
-        return switch (condition) {
-            case Condition.And(var operands) -> operands;
-            default -> List.of(condition);
-        };
+        var flattened = new ArrayList<Condition>();
+        collectConjunctionOperands(condition, flattened);
+        return List.copyOf(flattened);
+    }
+
+    private static void collectConjunctionOperands(Condition condition, List<Condition> operands) {
+        switch (condition) {
+            case Condition.And(var nestedOperands) ->
+                nestedOperands.forEach(operand -> collectConjunctionOperands(operand, operands));
+            default -> operands.add(condition);
+        }
     }
 
     static Option<Condition> optionalConjunction(List<Condition> conditions) {
