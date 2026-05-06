@@ -5,9 +5,13 @@ import net.sf.jsqlparser.statement.select.AllColumns;
 import net.sf.jsqlparser.statement.select.PlainSelect;
 
 import nnsql.query.ir.Condition;
+import nnsql.query.ir.Filter;
 import nnsql.query.ir.IRExpression;
 import nnsql.query.ir.IRNode;
+import nnsql.query.ir.Product;
+import nnsql.query.ir.Relation;
 import nnsql.query.renderer.RenderContext;
+import nnsql.util.Option;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -261,6 +265,17 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
         RenderContext ctx,
         boolean useOuterJoinedAttributes
     ) {
+        var directSubquery = renderDirectCorrelatedExists(
+            subqueryIR,
+            correlations,
+            outerRelationName,
+            ctx,
+            useOuterJoinedAttributes
+        );
+        if (directSubquery.isSome()) {
+            return directSubquery.get();
+        }
+
         var coreIR = stripProjection(subqueryIR);
         var innerBaseName = comparisonRenderer.renderSubqueryBaseName(coreIR, ctx);
 
@@ -306,6 +321,200 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
         }
         ps.setWhere(andAll(conditions));
         return ps;
+    }
+
+    private Option<PlainSelect> renderDirectCorrelatedExists(
+        IRNode subqueryIR,
+        List<IRExpression.Correlation> correlations,
+        String outerRelationName,
+        RenderContext ctx,
+        boolean useOuterJoinedAttributes
+    ) {
+        return simpleSingleTableSubquery(stripProjection(subqueryIR))
+            .flatMap(subquery -> buildDirectCorrelatedExists(
+                subquery,
+                correlations,
+                outerRelationName,
+                ctx,
+                useOuterJoinedAttributes
+            ));
+    }
+
+    private Option<SimpleCorrelatedExistsSubquery> simpleSingleTableSubquery(IRNode node) {
+        return switch (node) {
+            case Product product -> simpleSingleTableProduct(product)
+                .map(relation -> new SimpleCorrelatedExistsSubquery(relation, Option.none()));
+            case Filter(var input, var condition, _) -> simpleSingleTableSubquery(input)
+                .map(subquery -> new SimpleCorrelatedExistsSubquery(
+                    subquery.relation(),
+                    Option.some(condition)
+                ));
+            default -> Option.none();
+        };
+    }
+
+    private Option<Relation.Table> simpleSingleTableProduct(Product product) {
+        if (product.relations().size() != 1 || !product.joinPredicates().isEmpty()) {
+            return Option.none();
+        }
+
+        return switch (product.relations().getFirst()) {
+            case Relation.Table relation -> Option.some(relation);
+            case Relation.Subquery _ -> Option.none();
+        };
+    }
+
+    private Option<PlainSelect> buildDirectCorrelatedExists(
+        SimpleCorrelatedExistsSubquery subquery,
+        List<IRExpression.Correlation> correlations,
+        String outerRelationName,
+        RenderContext ctx,
+        boolean useOuterJoinedAttributes
+    ) {
+        var innerAttributes = new ArrayList<String>();
+        correlations.stream()
+            .map(IRExpression.Correlation::innerAttribute)
+            .forEach(innerAttributes::add);
+        subquery.localCondition()
+            .map(ExpressionSqlRenderer::collectColumnsFromCondition)
+            .stream()
+            .flatMap(List::stream)
+            .forEach(innerAttributes::add);
+        innerAttributes = new ArrayList<>(innerAttributes.stream().distinct().toList());
+        if (innerAttributes.isEmpty()
+            || !allAttributesBelongToRelation(innerAttributes, subquery.relation())) {
+            return Option.none();
+        }
+
+        var attrAliases = new LinkedHashMap<String, net.sf.jsqlparser.schema.Table>();
+        for (var attribute : innerAttributes) {
+            var attrTable = table(attrTable(
+                subquery.relation().tableName(),
+                unqualifiedAttribute(attribute, subquery.relation())
+            ));
+            attrAliases.put(attribute, attrTable);
+        }
+
+        var ps = new PlainSelect();
+        ps.addSelectItem(new AllColumns());
+
+        var anchorAttribute = innerAttributes.getFirst();
+        var anchorTable = attrAliases.get(anchorAttribute);
+        ps.setFromItem(anchorTable);
+
+        var joins = new ArrayList<net.sf.jsqlparser.statement.select.Join>();
+        attrAliases.forEach((attribute, attrTable) -> {
+            if (attribute.equals(anchorAttribute)) {
+                return;
+            }
+            joins.add(join(
+                attrTable,
+                new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                    column(attrTable, "id"),
+                    column(anchorTable, "id")
+                )
+            ));
+        });
+
+        var conditions = new ArrayList<Expression>();
+        for (var correlation : correlations) {
+            conditions.add(comparison(
+                correlatedOuterValueExpr(
+                    outerRelationName,
+                    correlation.outerAttribute(),
+                    joins,
+                    useOuterJoinedAttributes
+                ),
+                correlation.operator(),
+                column(attrAliases.get(correlation.innerAttribute()), "v")
+            ));
+        }
+
+        if (subquery.localCondition().isSome()) {
+            var localCondition = renderDirectInnerCondition(subquery.localCondition().get(), attrAliases);
+            if (localCondition.isNone()) {
+                return Option.none();
+            }
+            conditions.add(localCondition.get());
+        }
+
+        if (!joins.isEmpty()) {
+            ps.setJoins(joins);
+        }
+        ps.setWhere(andAll(conditions));
+        return Option.some(ps);
+    }
+
+    private boolean allAttributesBelongToRelation(List<String> attributes, Relation.Table relation) {
+        var sourceAttributes = new java.util.HashSet<>(relation.attributes());
+        return attributes.stream()
+            .map(attribute -> unqualifiedAttribute(attribute, relation))
+            .allMatch(sourceAttributes::contains);
+    }
+
+    private Option<Expression> renderDirectInnerCondition(
+        Condition condition,
+        LinkedHashMap<String, net.sf.jsqlparser.schema.Table> attrAliases
+    ) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, var operator) ->
+                renderDirectInnerExpression(left, attrAliases)
+                    .flatMap(leftExpr -> renderDirectInnerExpression(right, attrAliases)
+                        .map(rightExpr -> comparison(leftExpr, operator, rightExpr)));
+            case Condition.Like(var left, var pattern, var negated) ->
+                renderDirectInnerExpression(left, attrAliases)
+                    .flatMap(leftExpr -> renderDirectInnerExpression(pattern, attrAliases)
+                        .map(patternExpr -> like(leftExpr, patternExpr, negated)));
+            case Condition.And(var operands) -> renderDirectInnerLogicalCondition(operands, attrAliases, true);
+            case Condition.Or(var operands) -> renderDirectInnerLogicalCondition(operands, attrAliases, false);
+            case Condition.Not(var operand) -> renderDirectInnerCondition(operand, attrAliases)
+                .map(expr -> not(paren(expr)));
+            case Condition.IsNull _, Condition.Exists _, Condition.InSubquery _ -> Option.none();
+        };
+    }
+
+    private Option<Expression> renderDirectInnerLogicalCondition(
+        List<Condition> operands,
+        LinkedHashMap<String, net.sf.jsqlparser.schema.Table> attrAliases,
+        boolean conjunction
+    ) {
+        var rendered = new ArrayList<Expression>();
+        for (var operand : operands) {
+            var expression = renderDirectInnerCondition(operand, attrAliases);
+            if (expression.isNone()) {
+                return Option.none();
+            }
+            rendered.add(paren(expression.get()));
+        }
+
+        return Option.some(conjunction ? andAll(rendered) : orAll(rendered));
+    }
+
+    private Option<Expression> renderDirectInnerExpression(
+        IRExpression expression,
+        LinkedHashMap<String, net.sf.jsqlparser.schema.Table> attrAliases
+    ) {
+        return switch (expression) {
+            case IRExpression.ColumnRef(var columnName) -> Option.ofNullable(attrAliases.get(columnName))
+                .map(attrTable -> column(attrTable, "v"));
+            case IRExpression.Literal literal -> Option.some(literal(literal));
+            case IRExpression.BinaryOp(var left, var operator, var right) ->
+                renderDirectInnerExpression(left, attrAliases)
+                    .flatMap(leftExpr -> renderDirectInnerExpression(right, attrAliases)
+                        .map(rightExpr -> arithmetic(leftExpr, operator.toSql(), rightExpr)));
+            case IRExpression.Cast(var inner, var targetType) ->
+                renderDirectInnerExpression(inner, attrAliases)
+                    .map(innerExpr -> new net.sf.jsqlparser.expression.CastExpression("CAST", innerExpr, targetType));
+            case IRExpression.FunctionCall _, IRExpression.CaseWhen _,
+                 IRExpression.Aggregate _, IRExpression.ScalarSubquery _ -> Option.none();
+        };
+    }
+
+    private String unqualifiedAttribute(String qualifiedAttribute, Relation.Table relation) {
+        var prefix = relation.alias() + "_";
+        return qualifiedAttribute.startsWith(prefix)
+            ? qualifiedAttribute.substring(prefix.length())
+            : qualifiedAttribute;
     }
 
     private Expression correlatedOuterValueExpr(
@@ -544,6 +753,12 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
     }
 
     private record InlinedCorrelatedExists(Expression predicate, List<String> requiredColumns) {
+    }
+
+    private record SimpleCorrelatedExistsSubquery(
+        Relation.Table relation,
+        Option<Condition> localCondition
+    ) {
     }
 
     private Expression renderLogical(List<Condition> operands, boolean negate,
