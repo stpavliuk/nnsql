@@ -99,18 +99,32 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
             .toList());
         requiredColumns = new ArrayList<>(requiredColumns.stream().distinct().toList());
 
-        var idTbl = table(idTable(relationName));
         var ps = new PlainSelect();
-        ps.addSelectItem(column(idTbl, "id"));
-        ps.setFromItem(idTbl);
 
         var joins = new ArrayList<net.sf.jsqlparser.statement.select.Join>();
         var whereConditions = new ArrayList<Expression>();
-        if (!requiredColumns.isEmpty()) {
+        if (requiredColumns.isEmpty() || !fallbackConditions.isEmpty()) {
+            var idTbl = table(idTable(relationName));
+            ps.addSelectItem(column(idTbl, "id"));
+            ps.setFromItem(idTbl);
             addComputedExprAttributeJoins(
                 relationName,
                 requiredColumns,
                 column(idTbl, "id"),
+                false,
+                Sql.NonCaseJoinMode.SIMPLE_JOIN_WITH_WHERE_ID,
+                joins,
+                whereConditions
+            );
+        } else {
+            var anchorColumn = requiredColumns.removeFirst();
+            var anchorTable = table(attrTable(relationName, anchorColumn));
+            ps.addSelectItem(column(anchorTable, "id"));
+            ps.setFromItem(anchorTable);
+            addComputedExprAttributeJoins(
+                relationName,
+                requiredColumns,
+                column(anchorTable, "id"),
                 false,
                 Sql.NonCaseJoinMode.SIMPLE_JOIN_WITH_WHERE_ID,
                 joins,
