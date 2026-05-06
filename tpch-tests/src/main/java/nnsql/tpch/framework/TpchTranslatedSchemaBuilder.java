@@ -38,6 +38,10 @@ final class TpchTranslatedSchemaBuilder {
                         v %s,
                         FOREIGN KEY (id) REFERENCES %s__ID(id)
                     )""".formatted(tableName, attribute, type, tableName));
+                statements.add("""
+                    CREATE INDEX %s_%s_v_idx
+                    ON %s_%s (v)
+                    """.formatted(tableName, attribute, tableName, attribute));
             }
         }
 

@@ -22,6 +22,8 @@ class TpchTranslatedSchemaBuilderTest {
         assertTrue(ddl.contains("v DECIMAL (15, 2)"));
         assertTrue(ddl.contains("CREATE TABLE lineitem_l_shipdate"));
         assertTrue(ddl.contains("v DATE"));
+        assertTrue(ddl.contains("CREATE INDEX lineitem_l_shipdate_v_idx"));
+        assertTrue(ddl.contains("ON lineitem_l_shipdate (v)"));
         assertTrue(ddl.contains("FOREIGN KEY (id) REFERENCES customer__ID(id)"));
     }
 }

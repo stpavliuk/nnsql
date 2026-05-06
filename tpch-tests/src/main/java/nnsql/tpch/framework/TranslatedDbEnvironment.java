@@ -8,7 +8,8 @@ import java.util.*;
 
 public class TranslatedDbEnvironment implements AutoCloseable {
 
-    private static final int QUERY_TIMEOUT_SECONDS = 15;
+    private static final int QUERY_TIMEOUT_SECONDS = 60;
+    private static final String QUERY_TIMEOUT_SECONDS_PROPERTY = "nnsql.tpch.queryTimeoutSeconds";
     private static final String TIMING_RUNS_PROPERTY = "nnsql.tpch.timingRuns";
     private static final String TIMING_WARMUP_RUNS_PROPERTY = "nnsql.tpch.timingWarmupRuns";
 
@@ -36,11 +37,11 @@ public class TranslatedDbEnvironment implements AutoCloseable {
     }
 
     public DatabaseHandle source() {
-        return new DatabaseHandle(sourceConn, QUERY_TIMEOUT_SECONDS);
+        return new DatabaseHandle(sourceConn, resolvedQueryTimeoutSeconds());
     }
 
     public DatabaseHandle target() {
-        return new DatabaseHandle(targetConn, QUERY_TIMEOUT_SECONDS);
+        return new DatabaseHandle(targetConn, resolvedQueryTimeoutSeconds());
     }
 
     public QueryTranslator translator() {
@@ -211,6 +212,10 @@ public class TranslatedDbEnvironment implements AutoCloseable {
                 return defaultValue;
             }
         }
+    }
+
+    private static int resolvedQueryTimeoutSeconds() {
+        return DatabaseHandle.readConfiguredRunCount(QUERY_TIMEOUT_SECONDS_PROPERTY, QUERY_TIMEOUT_SECONDS, 1);
     }
 
     public record QueryExecution(

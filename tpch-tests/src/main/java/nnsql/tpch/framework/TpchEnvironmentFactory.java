@@ -146,6 +146,22 @@ final class TpchEnvironmentFactory {
         for (var tableName : fixtureSet.tables()) {
             copyCsv(sourceConn, tableName, stagedCsvDir.resolve(tableName + ".csv"));
         }
+        createSourceIndexes(sourceConn, TpchSchemaRegistryFactory.create(fixtureSet));
+    }
+
+    private static void createSourceIndexes(
+        Connection sourceConn,
+        SchemaRegistry schemaRegistry
+    ) throws SQLException {
+        for (var tableName : schemaRegistry.tableNames()) {
+            var schema = schemaRegistry.getSchema(tableName);
+            for (var attribute : schema.attributes()) {
+                executeSql(sourceConn, """
+                    CREATE INDEX %s_%s_idx
+                    ON %s (%s)
+                    """.formatted(tableName, attribute, tableName, attribute));
+            }
+        }
     }
 
     private static void initializeTranslatedTarget(

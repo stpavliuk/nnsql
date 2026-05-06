@@ -500,13 +500,37 @@ class QueryTranslationTest {
     }
 
     @Test
-    void rejectsExplicitJoinSyntax() {
+    void translatesExplicitInnerJoinSyntax() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R INNER JOIN S ON R.B = S.B"
+        ));
+
+        assertTrue(sql.contains("R_B AS _jp0"));
+        assertTrue(sql.contains("S_B AS _jp1"));
+        assertTrue(sql.contains("_jp0.v = _jp1.v"));
+        assertTrue(sql.contains("return_1_attr_R_A"));
+    }
+
+    @Test
+    void translatesExplicitInnerJoinAliases() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT r.A FROM R r JOIN S s ON r.B = s.B"
+        ));
+
+        assertTrue(sql.contains("R_B AS _jp0"));
+        assertTrue(sql.contains("S_B AS _jp1"));
+        assertTrue(sql.contains("_jp0.v = _jp1.v"));
+        assertTrue(sql.contains("return_1_attr_r_A"));
+    }
+
+    @Test
+    void rejectsOuterJoinSyntaxUntilRowPreservingSemanticsExist() {
         var error = assertThrows(UnsupportedOperationException.class, () -> translator.translate(
             "SELECT customer.c_custkey FROM customer LEFT JOIN S ON customer.c_custkey = S.B"
         ));
 
         assertEquals(
-            "Explicit JOIN syntax is not supported yet",
+            "Outer JOIN syntax is not supported yet; it needs row-preserving 6NF semantics",
             error.getMessage()
         );
     }
@@ -965,6 +989,20 @@ class QueryTranslationTest {
 
         assertTrue(sql.contains("CAST(MIN(CAST(product_0_id.id AS TEXT)) AS UUID) AS id"));
         assertFalse(sql.contains("MIN(product_0_id.id) AS id"));
+    }
+
+    @Test
+    void testPostgresCompatibleRendererMaterializesCtes() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("R", List.of("A", "B"));
+
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            "SELECT R.A FROM R WHERE R.B > 10"
+        ));
+
+        assertTrue(sql.contains("product_0_id AS MATERIALIZED"));
+        assertTrue(sql.contains("filter_1_id AS MATERIALIZED"));
     }
 
     @Test

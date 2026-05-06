@@ -5,6 +5,7 @@ import nnsql.tpch.framework.TPCHQueryTest;
 import nnsql.tpch.framework.TranslatedDbEnvironment;
 import nnsql.tpch.framework.TranslatedDbExtension;
 import nnsql.tpch.framework.TpchHtmlReport;
+import nnsql.tpch.framework.TpchQueryDiagnostics;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
@@ -21,6 +22,8 @@ class TpchPostgresQueriesTest {
     private static final boolean LOG_QUERIES = Boolean.getBoolean("nnsql.tpch.logQueries");
     private static final boolean INCLUDE_QUERIES_IN_FAILURE =
         LOG_QUERIES || Boolean.getBoolean("nnsql.tpch.includeQueriesInFailure");
+    private static final boolean DEBUG_FAILURES =
+        Boolean.parseBoolean(System.getProperty("nnsql.tpch.debugOnFailure", "true"));
     private TranslatedDbEnvironment env;
 
     @BeforeAll
@@ -88,7 +91,7 @@ class TpchPostgresQueriesTest {
         assertTpchQuery("Q12", query, orderSensitive);
     }
 
-    @Disabled("Explicit JOIN ... ON ... is not implemented yet")
+    @Disabled("LEFT OUTER JOIN row-preserving 6NF semantics are not implemented yet")
     @TPCHQueryTest("h13.sql")
     void q13(String query, boolean orderSensitive) throws Exception {
         assertTpchQuery("Q13", query, orderSensitive);
@@ -168,8 +171,8 @@ class TpchPostgresQueriesTest {
                 System.out.println(translated);
             }
 
-            sourceExecution = env.source().executeWithDiagnostics(query);
-            translatedExecution = env.target().executeWithDiagnostics(translated);
+            sourceExecution = executeSourceQuery(queryName, query);
+            translatedExecution = executeTranslatedQuery(queryName, translated);
 
             ResultSetComparator.assertResultsMatch(
                 sourceExecution.rows(),
@@ -180,11 +183,25 @@ class TpchPostgresQueriesTest {
             success = true;
         } catch (AssertionError e) {
             failureMessage = assertionWithQueries(e.getMessage(), query, translated);
+            printDiagnosticsOnFailure(
+                queryName,
+                query,
+                translated,
+                sourceExecution,
+                translatedExecution
+            );
             throw new AssertionError(failureMessage, e);
         } catch (Exception e) {
             if (failureMessage == null || failureMessage.isBlank()) {
                 failureMessage = e.getMessage();
             }
+            printDiagnosticsOnFailure(
+                queryName,
+                query,
+                translated,
+                sourceExecution,
+                translatedExecution
+            );
             throw e;
         } finally {
             TpchHtmlReport.record(new TpchHtmlReport.QueryReportEntry(
@@ -204,6 +221,52 @@ class TpchPostgresQueriesTest {
                 failureMessage
             ));
         }
+    }
+
+    private TranslatedDbEnvironment.QueryExecution executeSourceQuery(String queryName, String query) throws Exception {
+        try {
+            return env.source().executeWithDiagnostics(query);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                "Source execution failed for %s: %s".formatted(queryName, e.getMessage()),
+                e
+            );
+        }
+    }
+
+    private TranslatedDbEnvironment.QueryExecution executeTranslatedQuery(
+        String queryName,
+        String translated
+    ) throws Exception {
+        try {
+            return env.target().executeWithDiagnostics(translated);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                "Translated execution failed for %s: %s".formatted(queryName, e.getMessage()),
+                e
+            );
+        }
+    }
+
+    private void printDiagnosticsOnFailure(
+        String queryName,
+        String query,
+        String translated,
+        TranslatedDbEnvironment.QueryExecution sourceExecution,
+        TranslatedDbEnvironment.QueryExecution translatedExecution
+    ) {
+        if (!DEBUG_FAILURES) {
+            return;
+        }
+        var diagnostics = TpchQueryDiagnostics.collect(
+            queryName,
+            query,
+            translated,
+            sourceExecution,
+            translatedExecution,
+            env.target()
+        );
+        System.out.println(TpchQueryDiagnostics.format(diagnostics));
     }
 
     private static void assertQueryAvailable(String queryName, String query) {

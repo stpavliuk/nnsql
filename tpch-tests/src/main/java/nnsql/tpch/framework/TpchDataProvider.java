@@ -53,13 +53,22 @@ public class TpchDataProvider implements BenchmarkDataProvider {
     }
 
     private static IntStream expandRange(String token) {
+        var normalizedToken = normalizeQueryToken(token);
         var dashIdx = token.indexOf('-');
         if (dashIdx > 0 && dashIdx < token.length() - 1) {
-            var start = Integer.parseInt(token.substring(0, dashIdx).strip());
-            var end = Integer.parseInt(token.substring(dashIdx + 1).strip());
+            var start = Integer.parseInt(normalizeQueryToken(token.substring(0, dashIdx)));
+            var end = Integer.parseInt(normalizeQueryToken(token.substring(dashIdx + 1)));
             return IntStream.rangeClosed(start, end);
         }
-        return IntStream.of(Integer.parseInt(token));
+        return IntStream.of(Integer.parseInt(normalizedToken));
+    }
+
+    private static String normalizeQueryToken(String token) {
+        var stripped = token.strip();
+        if (stripped.length() >= 2 && (stripped.charAt(0) == 'Q' || stripped.charAt(0) == 'q')) {
+            return stripped.substring(1);
+        }
+        return stripped;
     }
 
     private static PlainSelect parseTopLevelSelect(String sql) {

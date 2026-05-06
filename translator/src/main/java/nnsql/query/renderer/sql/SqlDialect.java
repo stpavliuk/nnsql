@@ -22,6 +22,10 @@ public interface SqlDialect {
         return fn("MIN", idExpression);
     }
 
+    default boolean materializeCommonTableExpressions() {
+        return false;
+    }
+
     static SqlDialect duckDb() {
         return new SqlDialect() {
             @Override
@@ -63,6 +67,11 @@ public interface SqlDialect {
             @Override
             public Expression representativeId(Expression idExpression) {
                 return new CastExpression("CAST", fn("MIN", new CastExpression("CAST", idExpression, "TEXT")), "UUID");
+            }
+
+            @Override
+            public boolean materializeCommonTableExpressions() {
+                return true;
             }
         };
     }

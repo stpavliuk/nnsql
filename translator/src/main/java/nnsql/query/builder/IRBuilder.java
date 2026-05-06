@@ -58,16 +58,17 @@ public class IRBuilder {
     private IRNode buildSelect(PlainSelect select, boolean topLevel) {
         var pipeline = IRPipeline.start();
 
-        var relations = extractRelations(select);
-        pipeline = pipeline.product(relations);
+        var fromClause = extractFromClause(select);
+        pipeline = pipeline.product(fromClause.relations());
         var availableAttrs = AttributeResolver.collectFrom(pipeline.build());
 
         scopeStack.push(availableAttrs);
         try {
             var correlations = new ArrayList<IRExpression.Correlation>();
 
-            if (select.getWhere() != null) {
-                var condition = toCondition(select.getWhere());
+            var filterCondition = filterCondition(fromClause, select.getWhere());
+            if (filterCondition.isSome()) {
+                var condition = filterCondition.get();
                 var whereSplit = splitCorrelations(condition, availableAttrs, outerScopeAttributes());
                 correlations.addAll(whereSplit.correlations());
 
@@ -147,28 +148,70 @@ public class IRBuilder {
         }
     }
 
-    private List<Relation> extractRelations(PlainSelect select) {
+    private FromClause extractFromClause(PlainSelect select) {
         var relations = new ArrayList<Relation>();
+        var joinConditions = new ArrayList<Condition>();
         relations.add(toRelation(select.getFromItem()));
 
         if (select.getJoins() != null) {
             for (var join : select.getJoins()) {
-                rejectExplicitJoin(join);
+                validateSupportedJoin(join);
                 relations.add(toRelation(join.getFromItem()));
+                collectJoinConditions(join, joinConditions);
             }
         }
 
-        return relations;
+        return new FromClause(relations, joinConditions);
     }
 
-    private void rejectExplicitJoin(Join join) {
-        if (join.isSimple()) {
+    private void validateSupportedJoin(Join join) {
+        if (join.isSimple() || join.isCross() || join.isInner() || join.isInnerJoin()) {
             return;
         }
 
-        throw new UnsupportedOperationException(
-            "Explicit JOIN syntax is not supported yet"
-        );
+        if (join.isLeft() || join.isRight() || join.isFull() || join.isOuter()) {
+            throw new UnsupportedOperationException(
+                "Outer JOIN syntax is not supported yet; it needs row-preserving 6NF semantics"
+            );
+        }
+
+        if (join.isNatural()) {
+            throw new UnsupportedOperationException("NATURAL JOIN syntax is not supported yet");
+        }
+
+        if (join.getUsingColumns() != null && !join.getUsingColumns().isEmpty()) {
+            throw new UnsupportedOperationException("JOIN ... USING syntax is not supported yet");
+        }
+
+        throw new UnsupportedOperationException("Unsupported JOIN syntax: " + join);
+    }
+
+    private void collectJoinConditions(Join join, List<Condition> joinConditions) {
+        if (join.getUsingColumns() != null && !join.getUsingColumns().isEmpty()) {
+            throw new UnsupportedOperationException("JOIN ... USING syntax is not supported yet");
+        }
+
+        var onExpressions = join.getOnExpressions();
+        if (onExpressions == null) {
+            return;
+        }
+
+        onExpressions.stream()
+            .map(this::toCondition)
+            .forEach(joinConditions::add);
+    }
+
+    private Option<Condition> filterCondition(FromClause fromClause, Expression where) {
+        var conditions = new ArrayList<Condition>(fromClause.joinConditions());
+        if (where != null) {
+            conditions.add(toCondition(where));
+        }
+
+        return switch (conditions.size()) {
+            case 0 -> Option.none();
+            case 1 -> Option.some(conditions.getFirst());
+            default -> Option.some((Condition) Condition.and(conditions));
+        };
     }
 
     private Relation toRelation(FromItem from) {
@@ -537,6 +580,13 @@ public class IRBuilder {
     }
 
     private record InRightExpression(Expression payload, List<Expression> trailingPredicates) {
+    }
+
+    private record FromClause(List<Relation> relations, List<Condition> joinConditions) {
+        FromClause {
+            relations = List.copyOf(relations);
+            joinConditions = List.copyOf(joinConditions);
+        }
     }
 
     private record CorrelationSplit(Option<Condition> localCondition, List<IRExpression.Correlation> correlations) {

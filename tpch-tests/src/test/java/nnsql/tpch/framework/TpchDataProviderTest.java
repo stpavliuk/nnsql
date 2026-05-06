@@ -51,4 +51,18 @@ class TpchDataProviderTest {
         assertEquals("Q04", queries.get(2).name());
         assertEquals("Q22", queries.getLast().name());
     }
+
+    @Test
+    void queriesFilterSupportsPrefixedQueryNames() throws Exception {
+        System.setProperty(QUERIES_PROPERTY, "Q01,q03-Q04,Q22");
+        var provider = new TpchDataProvider();
+
+        var queries = provider.queries();
+
+        assertEquals(4, queries.size());
+        assertEquals("Q01", queries.getFirst().name());
+        assertEquals("Q03", queries.get(1).name());
+        assertEquals("Q04", queries.get(2).name());
+        assertEquals("Q22", queries.getLast().name());
+    }
 }

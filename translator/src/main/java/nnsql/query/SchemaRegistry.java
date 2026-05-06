@@ -34,6 +34,13 @@ public class SchemaRegistry {
         return tableSchemas.containsKey(tableName.toUpperCase());
     }
 
+    public List<String> tableNames() {
+        return tableSchemas.values().stream()
+            .map(TableSchema::tableName)
+            .sorted()
+            .toList();
+    }
+
     public record TableSchema(
         String tableName,
         List<String> attributes,

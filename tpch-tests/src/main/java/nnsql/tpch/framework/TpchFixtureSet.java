@@ -49,7 +49,7 @@ public record TpchFixtureSet(
     }
 
     static String cacheKey(double nullRate, TpchFixtureSet fixtureSet) {
-        var descriptor = "fixture-cache-v1|"
+        var descriptor = "fixture-cache-v4-source-and-6nf-value-indexes|"
             + fixtureSet.scaleFactor()
             + "|"
             + normalizeRate(nullRate)

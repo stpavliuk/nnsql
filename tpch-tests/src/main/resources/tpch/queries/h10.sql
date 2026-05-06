@@ -23,5 +23,12 @@ GROUP BY c_custkey,
          n_name,
          c_address,
          c_comment
-ORDER BY revenue DESC
+ORDER BY revenue DESC,
+         c_custkey,
+         c_name,
+         c_acctbal,
+         n_name,
+         c_address,
+         c_phone,
+         c_comment
 LIMIT 20 ;

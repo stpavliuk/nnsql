@@ -28,6 +28,7 @@ public class SQLIRRenderer implements IRRenderer {
     private final AggFilterRenderer aggFilterRenderer;
     private final ReturnRenderer    returnRenderer;
     private final DuplElimRenderer  duplElimRenderer;
+    private final SqlDialect        dialect;
 
     private IdentityHashMap<IRNode, String> activeSubqueryCache;
 
@@ -36,6 +37,7 @@ public class SQLIRRenderer implements IRRenderer {
     }
 
     private SQLIRRenderer(SqlDialect dialect) {
+        this.dialect = dialect;
         var conditionRenderer = new ConditionRenderer(this::renderNodeForSubquery, dialect);
         this.productRenderer = new ProductRenderer(dialect.productRowIdExpressionRenderer());
         this.filterRenderer = new FilterRenderer(conditionRenderer);
@@ -56,7 +58,7 @@ public class SQLIRRenderer implements IRRenderer {
         var lastBaseName = renderNode(ir, ctx);
         activeSubqueryCache = null;
         var finalSelect = buildFinalSelect(ir, lastBaseName);
-        return SqlQueryDocument.from(ctx, finalSelect).toSql();
+        return SqlQueryDocument.from(ctx, finalSelect, dialect).toSql();
     }
 
     private String renderNodeForSubquery(IRNode node, RenderContext ctx) {

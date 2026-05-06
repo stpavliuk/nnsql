@@ -42,6 +42,9 @@ tasks.named('test') {
     if (System.getProperty('nnsql.tpch.timingWarmupRuns')) {
         systemProperty 'nnsql.tpch.timingWarmupRuns', System.getProperty('nnsql.tpch.timingWarmupRuns')
     }
+    if (System.getProperty('nnsql.tpch.queryTimeoutSeconds')) {
+        systemProperty 'nnsql.tpch.queryTimeoutSeconds', System.getProperty('nnsql.tpch.queryTimeoutSeconds')
+    }
     if (System.getProperty('nnsql.tpch.jdbcUrl')) {
         systemProperty 'nnsql.tpch.jdbcUrl', System.getProperty('nnsql.tpch.jdbcUrl')
     }
@@ -64,4 +67,26 @@ tasks.register('tpchTest') {
     group = 'verification'
     description = 'Runs TPCH integration tests.'
     dependsOn(tasks.named('test'))
+}
+
+tasks.register('tpchDebug', JavaExec) {
+    group = 'verification'
+    description = 'Runs selected TPCH queries and prints source/translated diagnostics.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'nnsql.tpch.framework.TpchQueryDebugger'
+    [
+        'nnsql.tpch.scaleFactor',
+        'nnsql.tpch.nullRate',
+        'nnsql.tpch.queries',
+        'nnsql.tpch.timingRuns',
+        'nnsql.tpch.timingWarmupRuns',
+        'nnsql.tpch.queryTimeoutSeconds',
+        'nnsql.tpch.jdbcUrl',
+        'nnsql.tpch.jdbcUser',
+        'nnsql.tpch.jdbcPassword'
+    ].each { propertyName ->
+        if (System.getProperty(propertyName)) {
+            systemProperty propertyName, System.getProperty(propertyName)
+        }
+    }
 }

@@ -30,4 +30,11 @@ class TpchFixtureSetTest {
 
         assertNotEquals(zeroRate, defaultRate);
     }
+
+    @Test
+    void cacheKeyIncludesTranslatedStorageVersion() throws Exception {
+        var fixtureSet = TpchFixtureSet.load("1");
+
+        assertEquals("33affe0024fb14c27fcea7a2", TpchFixtureSet.cacheKey(0.7d, fixtureSet));
+    }
 }
