@@ -48,6 +48,9 @@ final class SqlQueryDocument {
     ) {
         var rootCTEs = RenderContext.dependenciesOf(finalSelect);
         var usedCTEs = ctx.getUsedCTEs(rootCTEs);
+        if (dialect.materializeCommonTableExpressions()) {
+            pruneUnusedProjectedFilterAttributes(usedCTEs);
+        }
         return new SqlQueryDocument(
             finalSelect,
             usedCTEs,
@@ -134,17 +137,31 @@ final class SqlQueryDocument {
             && select.getWhere() != null
             && select.getGroupBy() == null
             && select.getHaving() == null
-            && hasFilterAttributeProjection(select)
+            && !containsSubquery(select.getWhere())
             && !containsAggregate(select.getWhere())
             && !containsAggregate(select);
     }
 
-    private static boolean hasFilterAttributeProjection(PlainSelect select) {
-        return select.getSelectItems().stream()
-            .anyMatch(item -> {
+    private static void pruneUnusedProjectedFilterAttributes(List<CTE> ctes) {
+        for (var cte : ctes) {
+            if (!cte.name().startsWith("filter_") || !cte.name().endsWith("_id")) {
+                continue;
+            }
+            cte.definition().getSelectItems().removeIf(item -> {
                 var alias = item.getAlias();
-                return alias != null && alias.getName().startsWith("filter_attr_");
+                return alias != null
+                    && alias.getName().startsWith("filter_attr_")
+                    && !isColumnReferenced(ctes, cte.name(), alias.getName());
             });
+        }
+    }
+
+    private static boolean isColumnReferenced(List<CTE> ctes, String cteName, String columnName) {
+        var qualifiedColumn = cteName + "." + columnName;
+        return ctes.stream()
+            .filter(cte -> cte.dependencies().contains(cteName))
+            .map(cte -> cte.definition().toString())
+            .anyMatch(sql -> sql.contains(qualifiedColumn));
     }
 
     private static boolean isSimpleAttributeScan(PlainSelect select) {
@@ -190,6 +207,10 @@ final class SqlQueryDocument {
             || normalized.contains("MIN(")
             || normalized.contains("MAX(")
             || normalized.contains("AVG(");
+    }
+
+    private static boolean containsSubquery(Expression expression) {
+        return expression != null && expression.toString().toUpperCase(java.util.Locale.ROOT).contains("SELECT ");
     }
 
     private static boolean isAggregateFunction(Function function) {

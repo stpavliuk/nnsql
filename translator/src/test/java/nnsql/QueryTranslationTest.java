@@ -1250,6 +1250,32 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererPrunesUnusedProjectedFilterAttributes() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("R", List.of("A", "B"));
+
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            "SELECT R.A FROM R WHERE R.B > 10"
+        ));
+
+        assertFalse(sql.contains("filter_attr_R_B"));
+    }
+
+    @Test
+    void testPostgresCompatibleRendererKeepsUsedProjectedFilterAttributes() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("R", List.of("A", "B"));
+
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            "SELECT R.B FROM R WHERE R.B > 10"
+        ));
+
+        assertTrue(sql.contains("filter_attr_R_B"));
+    }
+
+    @Test
     void testPostgresCompatibleRendererDoesNotFenceReusableBaseAttributeScans() {
         var schemaRegistry = new SchemaRegistry();
         schemaRegistry.registerTable("R", List.of("A"));
