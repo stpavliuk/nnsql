@@ -135,6 +135,7 @@ final class SqlQueryDocument {
             && select.getGroupBy() == null
             && select.getHaving() == null
             && hasFilterAttributeProjection(select)
+            && !containsAggregate(select.getWhere())
             && !containsAggregate(select);
     }
 
