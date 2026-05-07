@@ -372,10 +372,10 @@ class QueryTranslationTest {
         ));
 
         assertTrue(sql.contains(
-            "product_0_lineitem_l_quantity.v >= 1.0"
+            "product_1_lineitem_l_quantity.v >= 1.0"
         ));
         assertTrue(sql.contains(
-            "product_0_lineitem_l_quantity.v <= 11.0"
+            "product_1_lineitem_l_quantity.v <= 11.0"
         ));
         assertFalse(sql.contains(
             "EXISTS (SELECT * FROM product_0_lineitem_l_quantity WHERE product_0_lineitem_l_quantity.id = product_0_id.id AND product_0_lineitem_l_quantity.v >= 1.0)"
@@ -504,13 +504,13 @@ class QueryTranslationTest {
     }
 
     @Test
-    void testTopLevelJoinInSubqueryPredicatesArePushedIntoBaseRelations() {
+    void testTopLevelJoinInSubqueryPredicateStaysAtProductBoundary() {
         var sql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R, S WHERE R.B = S.B AND S.C IN (SELECT T.D FROM T WHERE T.E > 0)"
         ));
 
-        assertTrue(sql.contains("return_6_id AS S__ID"));
-        assertTrue(sql.contains("product_1_S_C.v IN (SELECT v FROM return_5_attr_T_D)"));
+        assertTrue(sql.contains("all_ids_product_0 AS"));
+        assertTrue(sql.contains("product_0_S_C.v IN (SELECT v FROM return_4_attr_T_D)"));
         assertTrue(sql.contains("T_E.v > 0.0"));
     }
 

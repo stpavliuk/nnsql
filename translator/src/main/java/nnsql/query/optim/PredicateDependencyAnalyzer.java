@@ -29,8 +29,7 @@ final class PredicateDependencyAnalyzer {
             case Condition.And(var operands) -> merge(operands.stream().map(this::find).toList());
             case Condition.Or(var operands) -> merge(operands.stream().map(this::find).toList());
             case Condition.Not(var operand) -> find(operand);
-            case Condition.Exists _ -> RelationDependency.unknown();
-            case Condition.InSubquery(var left, _, _) -> find(left);
+            case Condition.Exists _, Condition.InSubquery _ -> RelationDependency.unknown();
         };
     }
 

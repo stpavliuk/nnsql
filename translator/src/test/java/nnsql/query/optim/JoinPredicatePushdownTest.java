@@ -60,6 +60,55 @@ class JoinPredicatePushdownTest {
     }
 
     @Test
+    void pushesSingleRelationDisjunctionIntoTableRelation() {
+        var product = product();
+        var localPredicate = Condition.or(
+            Condition.eq(IRExpression.col("a_value"), IRExpression.number(10)),
+            Condition.eq(IRExpression.col("a_value"), IRExpression.number(20))
+        );
+        var filter = new Filter(
+            product,
+            Condition.and(joinPredicate(), localPredicate),
+            List.of("a_id", "a_value", "b_id", "b_value")
+        );
+
+        var optimized = JoinPredicatePushdown.optimize(filter);
+
+        var optimizedProduct = assertInstanceOf(Product.class, optimized);
+        var pushedRelation = assertInstanceOf(Relation.Subquery.class, optimizedProduct.relations().getFirst());
+        var relationProjection = assertInstanceOf(Return.class, pushedRelation.ir());
+        var relationFilter = assertInstanceOf(Filter.class, relationProjection.input());
+
+        assertEquals(localPredicate, relationFilter.condition());
+    }
+
+    @Test
+    void recursivelyAnalyzesNestedConjunctionsForLocalPushdown() {
+        var product = product();
+        var localPredicate = Condition.or(
+            Condition.eq(IRExpression.col("a_value"), IRExpression.number(10)),
+            Condition.eq(IRExpression.col("a_value"), IRExpression.number(20))
+        );
+        var residualPredicate = Condition.gt(IRExpression.col("a_value"), IRExpression.col("b_value"));
+        var filter = new Filter(
+            product,
+            Condition.and(joinPredicate(), Condition.and(localPredicate, residualPredicate)),
+            List.of("a_id", "a_value", "b_id", "b_value")
+        );
+
+        var optimized = JoinPredicatePushdown.optimize(filter);
+
+        var remainingFilter = assertInstanceOf(Filter.class, optimized);
+        var optimizedProduct = assertInstanceOf(Product.class, remainingFilter.input());
+        var pushedRelation = assertInstanceOf(Relation.Subquery.class, optimizedProduct.relations().getFirst());
+        var relationProjection = assertInstanceOf(Return.class, pushedRelation.ir());
+        var relationFilter = assertInstanceOf(Filter.class, relationProjection.input());
+
+        assertEquals(localPredicate, relationFilter.condition());
+        assertEquals(residualPredicate, remainingFilter.condition());
+    }
+
+    @Test
     void factorsCommonJoinPredicateOutOfOrBranchesBeforeExtraction() {
         var product = product();
         var leftLocalPredicate = Condition.gt(IRExpression.col("a_value"), IRExpression.number(10));

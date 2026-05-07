@@ -48,6 +48,7 @@ final class PredicatePlacementAnalyzer {
 
     private PredicatePlacement analyzeConjunct(Condition condition) {
         return switch (condition) {
+            case Condition.And(var operands) -> analyzeConjunction(operands);
             case Condition.Or(var branches) -> analyzeDisjunction(branches);
             default -> analyzeAtomic(condition);
         };
@@ -59,6 +60,13 @@ final class PredicatePlacementAnalyzer {
             .toList();
         var commonJoins = commonJoinPredicates(branchOperands);
         var reducedBranchOperands = removeCommonJoins(branchOperands, commonJoins);
+        var localDisjunction = singleLocalDisjunction(reducedBranchOperands);
+        if (localDisjunction.isSome()) {
+            var local = localDisjunction.get();
+            return joinPlacement(commonJoins)
+                .merge(PredicatePlacement.local(local.relation(), local.condition()));
+        }
+
         var residual = Condition.or(reducedBranchOperands.stream()
             .map(Conditions::conjunction)
             .toList());
@@ -135,6 +143,46 @@ final class PredicatePlacementAnalyzer {
             : Condition.or(branchLocalConditions));
     }
 
+    private Option<LocalDisjunction> singleLocalDisjunction(List<List<Condition>> branchOperands) {
+        ProductRelation disjunctionRelation = null;
+        for (var branch : branchOperands) {
+            if (branch.isEmpty()) {
+                return Option.none();
+            }
+
+            for (var operand : branch) {
+                var dependency = dependencyAnalyzer.find(operand);
+                if (dependency.state() == RelationDependency.State.INDEPENDENT) {
+                    continue;
+                }
+                if (dependency.localRelation().isNone()) {
+                    return Option.none();
+                }
+
+                var relation = dependency.localRelation().get();
+                if (!canPushInto(relation)) {
+                    return Option.none();
+                }
+                if (disjunctionRelation == null) {
+                    disjunctionRelation = relation;
+                } else if (disjunctionRelation.position() != relation.position()) {
+                    return Option.none();
+                }
+            }
+        }
+
+        if (disjunctionRelation == null) {
+            return Option.none();
+        }
+
+        return Option.some(new LocalDisjunction(
+            disjunctionRelation,
+            Condition.or(branchOperands.stream()
+                .map(Conditions::conjunction)
+                .toList())
+        ));
+    }
+
     private List<Condition> commonJoinPredicates(List<List<Condition>> branchOperands) {
         if (branchOperands.isEmpty()) {
             return List.of();
@@ -203,5 +251,8 @@ final class PredicatePlacementAnalyzer {
 
     private boolean canPushInto(ProductRelation relation) {
         return relation.isTable() && !reservedRelationAliases.contains(relation.alias());
+    }
+
+    private record LocalDisjunction(ProductRelation relation, Condition condition) {
     }
 }
