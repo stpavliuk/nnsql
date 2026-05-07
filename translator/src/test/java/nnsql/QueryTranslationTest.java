@@ -412,12 +412,9 @@ class QueryTranslationTest {
                 """
         ));
 
-        assertTrue(sql.contains(
-            "product_1_lineitem_l_quantity.v >= 1.0"
-        ));
-        assertTrue(sql.contains(
-            "product_1_lineitem_l_quantity.v <= 11.0"
-        ));
+        assertTrue(sql.contains("direct_group_attr_0.v >= 1.0"));
+        assertTrue(sql.contains("direct_group_attr_0.v <= 11.0"));
+        assertTrue(sql.contains("direct_group_attr_3.v = 'Brand#12'"));
         assertFalse(sql.contains(
             "EXISTS (SELECT * FROM product_0_lineitem_l_quantity WHERE product_0_lineitem_l_quantity.id = product_0_id.id AND product_0_lineitem_l_quantity.v >= 1.0)"
         ));

@@ -393,20 +393,31 @@ class GroupRenderer {
         Group group
     ) {
         if (!group.groupingAttributes().isEmpty()
-            || group.aggregates().size() != 1
+            || group.aggregates().isEmpty()
             || group.aggregates().stream().anyMatch(aggregate ->
-                !"SUM".equals(aggregate.function()) || aggregate.distinct())
-            || !(group.input() instanceof Filter filter)
-            || !(filter.input() instanceof Product product)
-            || product.relations().size() <= 1
+                !"SUM".equals(aggregate.function()) || aggregate.distinct())) {
+            return false;
+        }
+
+        var filteredProduct = filteredProductInput(group.input());
+        if (filteredProduct.isNone()) {
+            return false;
+        }
+        var product = filteredProduct.get().product();
+        var outerCondition = filteredProduct.get().condition();
+        if (product.relations().size() <= 1
             || product.relations().size() > 4
             || product.joinPredicates().isEmpty()
-            || !canRenderDirectCondition(filter.condition())) {
+            || outerCondition.stream().anyMatch(condition -> !canRenderDirectCondition(condition))) {
             return false;
         }
 
         var directRelations = directProductRelations(product);
         if (directRelations.isNone()) {
+            return false;
+        }
+        if (outerCondition.isNone()
+            && directRelations.get().stream().noneMatch(relation -> relation.filterCondition().isSome())) {
             return false;
         }
         if (directRelations.get().stream().anyMatch(relation -> relation.filterCondition().isSome()
@@ -419,9 +430,10 @@ class GroupRenderer {
             return false;
         }
 
-        var presenceColumns = new LinkedHashSet<>(
-            ExpressionSqlRenderer.collectColumnsFromCondition(filter.condition())
-        );
+        var presenceColumns = new LinkedHashSet<String>();
+        outerCondition.stream()
+            .map(ExpressionSqlRenderer::collectColumnsFromCondition)
+            .forEach(presenceColumns::addAll);
         for (var relation : directRelations.get()) {
             if (relation.filterCondition().isSome()) {
                 presenceColumns.addAll(ExpressionSqlRenderer.collectColumnsFromCondition(relation.filterCondition().get()));
@@ -431,11 +443,12 @@ class GroupRenderer {
             return false;
         }
 
-        var requiredColumns = new LinkedHashSet<>(presenceColumns);
+        var innerJoinColumns = new LinkedHashSet<>(presenceColumns);
         product.joinPredicates().forEach(predicate -> {
-            requiredColumns.add(qualifiedJoinAttribute(product, predicate.leftRelIndex(), predicate.leftAttr()));
-            requiredColumns.add(qualifiedJoinAttribute(product, predicate.rightRelIndex(), predicate.rightAttr()));
+            innerJoinColumns.add(qualifiedJoinAttribute(product, predicate.leftRelIndex(), predicate.leftAttr()));
+            innerJoinColumns.add(qualifiedJoinAttribute(product, predicate.rightRelIndex(), predicate.rightAttr()));
         });
+        var requiredColumns = new LinkedHashSet<>(innerJoinColumns);
         group.aggregates().stream()
             .map(IRExpression.Aggregate::argument)
             .map(ExpressionSqlRenderer::collectColumns)
@@ -470,7 +483,7 @@ class GroupRenderer {
         ));
         ps.addSelectItem(groupRepresentativeId(column(anchorAlias, "id"), group), new Alias("id", true));
 
-        var joins = buildDirectProductJoins(product, columns, aliases, bindings, anchorColumn, new LinkedHashSet<>(columns));
+        var joins = buildDirectProductJoins(product, columns, aliases, bindings, anchorColumn, innerJoinColumns);
         if (joins.isNone()) {
             return false;
         }
@@ -478,12 +491,14 @@ class GroupRenderer {
             ps.setJoins(joins.get().joins());
         }
 
-        var predicate = renderDirectCondition(filter.condition(), aliases);
-        if (predicate.isNone()) {
-            return false;
-        }
         var predicates = new ArrayList<Expression>();
-        predicates.add(paren(predicate.get()));
+        if (outerCondition.isSome()) {
+            var predicate = renderDirectCondition(outerCondition.get(), aliases);
+            if (predicate.isNone()) {
+                return false;
+            }
+            predicates.add(paren(predicate.get()));
+        }
         for (var relation : directRelations.get()) {
             if (relation.filterCondition().isSome()) {
                 var localPredicate = renderDirectCondition(relation.filterCondition().get(), aliases);
@@ -504,6 +519,15 @@ class GroupRenderer {
 
         ctx.addCTE(groupedDataName, ps);
         return true;
+    }
+
+    private Option<FilteredProductInput> filteredProductInput(nnsql.query.ir.IRNode input) {
+        return switch (input) {
+            case Filter(var filterInput, var condition, _) when filterInput instanceof Product product ->
+                Option.some(new FilteredProductInput(product, Option.some(condition)));
+            case Product product -> Option.some(new FilteredProductInput(product, Option.none()));
+            default -> Option.none();
+        };
     }
 
     private Option<DirectProductJoins> buildDirectProductJoins(
@@ -756,7 +780,11 @@ class GroupRenderer {
             case IRExpression.Cast(var inner, _) -> canRenderDirectExpression(inner);
             case IRExpression.FunctionCall(_, var arguments) ->
                 arguments.stream().allMatch(this::canRenderDirectExpression);
-            case IRExpression.CaseWhen _, IRExpression.Aggregate _, IRExpression.ScalarSubquery _ -> false;
+            case IRExpression.CaseWhen(var whens, var elseExpr) ->
+                whens.stream().allMatch(when ->
+                    canRenderDirectCondition(when.condition()) && canRenderDirectExpression(when.result()))
+                    && elseExpr.stream().allMatch(this::canRenderDirectExpression);
+            case IRExpression.Aggregate _, IRExpression.ScalarSubquery _ -> false;
         };
     }
 
@@ -777,9 +805,35 @@ class GroupRenderer {
                         .map(argument -> renderDirectExpression(argument, aliases))
                         .toList()
                 );
-            case IRExpression.CaseWhen _, IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->
+            case IRExpression.CaseWhen(var whens, var elseExpr) ->
+                renderDirectCaseWhen(whens, elseExpr, aliases);
+            case IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->
                 throw new UnsupportedOperationException("Unsupported expression in direct aggregate");
         };
+    }
+
+    private Expression renderDirectCaseWhen(
+        List<IRExpression.WhenClause> whens,
+        Option<IRExpression> elseExpr,
+        LinkedHashMap<String, String> aliases
+    ) {
+        var caseExpr = new CaseExpression();
+        caseExpr.setWhenClauses(whens.stream()
+            .map(when -> {
+                var sqlWhen = new WhenClause();
+                var condition = renderDirectCondition(when.condition(), aliases);
+                if (condition.isNone()) {
+                    throw new UnsupportedOperationException("Unsupported CASE condition in direct aggregate");
+                }
+                sqlWhen.setWhenExpression(condition.get());
+                sqlWhen.setThenExpression(renderDirectExpression(when.result(), aliases));
+                return sqlWhen;
+            })
+            .toList());
+        elseExpr.stream()
+            .map(expr -> renderDirectExpression(expr, aliases))
+            .forEach(caseExpr::setElseExpression);
+        return caseExpr;
     }
 
     private Expression renderDirectBinaryOp(
@@ -963,6 +1017,12 @@ class GroupRenderer {
     private record FilteredTable(
         Relation.Table relation,
         Condition condition
+    ) {
+    }
+
+    private record FilteredProductInput(
+        Product product,
+        Option<Condition> condition
     ) {
     }
 
