@@ -44,9 +44,9 @@ class ProductRenderer {
             return;
         }
 
-        addAllIdsCTE(ctx, baseName, product, subqueryBaseNames);
+        var projectedJoinAttributes = addAllIdsCTE(ctx, baseName, product, subqueryBaseNames);
         addIdCTE(ctx, baseName);
-        addAttributeCTEs(ctx, baseName, product, subqueryBaseNames);
+        addAttributeCTEs(ctx, baseName, product, subqueryBaseNames, projectedJoinAttributes);
     }
 
     private void addUnaryProductCTEs(
@@ -93,7 +93,7 @@ class ProductRenderer {
         ctx.addCTE(attrTable(baseName, qualifiedAttr), ps);
     }
 
-    private void addAllIdsCTE(
+    private Map<RelationAttr, String> addAllIdsCTE(
         RenderContext ctx,
         String baseName,
         Product product,
@@ -101,8 +101,9 @@ class ProductRenderer {
     ) {
         if (product.joinPredicates().isEmpty()) {
             addCartesianProductCTE(ctx, baseName, product, subqueryBaseNames);
+            return Map.of();
         } else {
-            addJoinProductCTE(ctx, baseName, product, subqueryBaseNames);
+            return addJoinProductCTE(ctx, baseName, product, subqueryBaseNames);
         }
     }
 
@@ -126,7 +127,7 @@ class ProductRenderer {
         ctx.addCTE("all_ids_" + baseName, ps);
     }
 
-    private void addJoinProductCTE(
+    private Map<RelationAttr, String> addJoinProductCTE(
         RenderContext ctx,
         String baseName,
         Product product,
@@ -255,7 +256,23 @@ class ProductRenderer {
             ps.setWhere(andAll(extraConditions));
         }
 
+        var projectedJoinAttributes = new LinkedHashMap<RelationAttr, String>();
+        joinedAttrAliases.forEach((relationAttr, tableAlias) -> {
+            var relation = relations.get(relationAttr.relIndex());
+            if (!(relation instanceof Relation.Subquery) || !relation.attributes().contains(relationAttr.attr())) {
+                return;
+            }
+            var projectedColumn = projectedJoinAttributeColumn(relationAttr);
+            ps.addSelectItem(column(tableAlias, "v"), new Alias(projectedColumn, true));
+            projectedJoinAttributes.put(relationAttr, projectedColumn);
+        });
+
         ctx.addCTE("all_ids_" + baseName, ps);
+        return projectedJoinAttributes;
+    }
+
+    private String projectedJoinAttributeColumn(RelationAttr relationAttr) {
+        return "join_attr_%d_%s".formatted(relationAttr.relIndex() + 1, relationAttr.attr());
     }
 
     private int startRelationIndex(java.util.List<Relation> relations) {
@@ -397,7 +414,8 @@ class ProductRenderer {
         RenderContext ctx,
         String baseName,
         Product product,
-        Map<String, String> subqueryBaseNames
+        Map<String, String> subqueryBaseNames,
+        Map<RelationAttr, String> projectedJoinAttributes
     ) {
         var relations = product.relations();
         IntStream.range(0, relations.size())
@@ -412,7 +430,8 @@ class ProductRenderer {
                             rel,
                             attr,
                             relIndex + 1,
-                            subqueryBaseNames
+                            subqueryBaseNames,
+                            projectedJoinAttributes
                         ));
                     case Relation.Subquery(var alias, _, var attrs) ->
                         attrs.forEach(attr -> addAttributeCTE(
@@ -421,7 +440,8 @@ class ProductRenderer {
                             rel,
                             attr,
                             relIndex + 1,
-                            subqueryBaseNames
+                            subqueryBaseNames,
+                            projectedJoinAttributes
                         ));
                 }
             });
@@ -433,10 +453,22 @@ class ProductRenderer {
         Relation relation,
         String attr,
         int idIndex,
-        Map<String, String> subqueryBaseNames
+        Map<String, String> subqueryBaseNames,
+        Map<RelationAttr, String> projectedJoinAttributes
     ) {
         var qualifiedAttr = relation.alias() + "_" + attr;
         var allIdsTbl = table("all_ids_" + baseName);
+        var projectedJoinAttribute = projectedJoinAttributes.get(new RelationAttr(idIndex - 1, attr));
+        if (projectedJoinAttribute != null) {
+            var ps = new PlainSelect();
+            ps.addSelectItem(column(allIdsTbl, "id"));
+            ps.addSelectItem(column(allIdsTbl, projectedJoinAttribute), new Alias("v", true));
+            ps.setFromItem(allIdsTbl);
+
+            ctx.addCTE(attrTable(baseName, qualifiedAttr), ps);
+            return;
+        }
+
         var attrTbl = sourceAttrTableFor(relation, attr, subqueryBaseNames);
 
         var ps = new PlainSelect();

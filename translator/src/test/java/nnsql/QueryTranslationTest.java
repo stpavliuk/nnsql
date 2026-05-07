@@ -947,6 +947,18 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testProductReusesProjectedSubqueryJoinAttribute() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT sq.S_B FROM R, (SELECT S.B FROM S WHERE S.C > 0) sq WHERE R.B = sq.S_B GROUP BY sq.S_B"
+        ));
+
+        assertTrue(sql.contains("sq__ID.id AS id2, _jp0.v AS join_attr_2_S_B"));
+        assertTrue(sql.contains(
+            "product_0_sq_S_B AS (SELECT all_ids_product_0.id, all_ids_product_0.join_attr_2_S_B AS v FROM all_ids_product_0)"
+        ));
+    }
+
+    @Test
     void testOrderByAndLimit() {
         var orderedSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R ORDER BY R.A LIMIT 10"
