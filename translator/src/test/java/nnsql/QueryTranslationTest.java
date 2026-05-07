@@ -280,7 +280,7 @@ class QueryTranslationTest {
         );
         assertTrue(sql.contains("JOIN partsupp_ps_supplycost AS direct_group_attr_5"));
         assertTrue(sql.contains("JOIN partsupp_ps_availqty AS direct_group_attr_6"));
-        assertTrue(sql.contains("WHERE direct_group_attr_0.v = 'GERMANY'"));
+        assertTrue(sql.contains("(direct_group_attr_0.v = 'GERMANY')"));
     }
 
     @Test
@@ -1258,7 +1258,10 @@ class QueryTranslationTest {
                 """
         ));
 
-        assertTrue(sql.contains("all_ids_product_0 AS"));
+        assertFalse(sql.contains("all_ids_product_0 AS"));
+        assertTrue(sql.contains("FROM part_p_brand AS direct_group_attr_0"));
+        assertTrue(sql.contains("JOIN lineitem_l_partkey AS direct_group_attr_7"));
+        assertTrue(sql.contains("SUM(direct_group_attr_8.v * (1.0 - direct_group_attr_9.v)) AS revenue"));
         assertFalse(sql.contains("AS MATERIALIZED"));
     }
 

@@ -399,9 +399,18 @@ class GroupRenderer {
             || !(group.input() instanceof Filter filter)
             || !(filter.input() instanceof Product product)
             || product.relations().size() <= 1
+            || product.relations().size() > 4
             || product.joinPredicates().isEmpty()
-            || product.relations().stream().anyMatch(relation -> !(relation instanceof Relation.Table))
             || !canRenderDirectCondition(filter.condition())) {
+            return false;
+        }
+
+        var directRelations = directProductRelations(product);
+        if (directRelations.isNone()) {
+            return false;
+        }
+        if (directRelations.get().stream().anyMatch(relation -> relation.filterCondition().isSome()
+            && !canRenderDirectCondition(relation.filterCondition().get()))) {
             return false;
         }
 
@@ -410,12 +419,19 @@ class GroupRenderer {
             return false;
         }
 
-        var filterColumns = ExpressionSqlRenderer.collectColumnsFromCondition(filter.condition());
-        if (filterColumns.isEmpty()) {
+        var presenceColumns = new LinkedHashSet<>(
+            ExpressionSqlRenderer.collectColumnsFromCondition(filter.condition())
+        );
+        for (var relation : directRelations.get()) {
+            if (relation.filterCondition().isSome()) {
+                presenceColumns.addAll(ExpressionSqlRenderer.collectColumnsFromCondition(relation.filterCondition().get()));
+            }
+        }
+        if (presenceColumns.isEmpty()) {
             return false;
         }
 
-        var requiredColumns = new LinkedHashSet<>(filterColumns);
+        var requiredColumns = new LinkedHashSet<>(presenceColumns);
         product.joinPredicates().forEach(predicate -> {
             requiredColumns.add(qualifiedJoinAttribute(product, predicate.leftRelIndex(), predicate.leftAttr()));
             requiredColumns.add(qualifiedJoinAttribute(product, predicate.rightRelIndex(), predicate.rightAttr()));
@@ -430,7 +446,7 @@ class GroupRenderer {
 
         var bindings = new LinkedHashMap<String, ColumnBinding>();
         for (var columnName : requiredColumns) {
-            var binding = bindProductColumn(product, columnName);
+            var binding = bindDirectProductColumn(directRelations.get(), columnName);
             if (binding.isNone()) {
                 return false;
             }
@@ -443,7 +459,7 @@ class GroupRenderer {
             aliases.put(columns.get(i), "direct_group_attr_" + i);
         }
 
-        var anchorColumn = filterColumns.getFirst();
+        var anchorColumn = presenceColumns.getFirst();
         var anchorBinding = bindings.get(anchorColumn);
         var anchorAlias = aliases.get(anchorColumn);
 
@@ -466,7 +482,18 @@ class GroupRenderer {
         if (predicate.isNone()) {
             return false;
         }
-        ps.setWhere(predicate.get());
+        var predicates = new ArrayList<Expression>();
+        predicates.add(paren(predicate.get()));
+        for (var relation : directRelations.get()) {
+            if (relation.filterCondition().isSome()) {
+                var localPredicate = renderDirectCondition(relation.filterCondition().get(), aliases);
+                if (localPredicate.isNone()) {
+                    return false;
+                }
+                predicates.add(paren(localPredicate.get()));
+            }
+        }
+        ps.setWhere(andAll(predicates));
 
         for (var aggregate : group.aggregates()) {
             ps.addSelectItem(
