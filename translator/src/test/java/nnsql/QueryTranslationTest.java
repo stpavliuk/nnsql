@@ -53,7 +53,22 @@ class QueryTranslationTest {
             List.of(
                 "ps_partkey",
                 "ps_suppkey",
-                "ps_availqty"
+                "ps_availqty",
+                "ps_supplycost"
+            )
+        );
+        schemaRegistry.registerTable(
+            "supplier",
+            List.of(
+                "s_suppkey",
+                "s_nationkey"
+            )
+        );
+        schemaRegistry.registerTable(
+            "nation",
+            List.of(
+                "n_nationkey",
+                "n_name"
             )
         );
         schemaRegistry.registerTable(
@@ -229,6 +244,43 @@ class QueryTranslationTest {
         assertTrue(columnBetweenSql.contains("product_0_R_A.v >= product_0_R_B.v"));
         assertTrue(columnBetweenSql.contains("product_0_R_A.v <= product_0_R_B.v"));
         assertFalse(columnBetweenSql.contains("WHERE EXISTS (SELECT * FROM product_0_R_A, product_0_R_B"));
+    }
+
+    @Test
+    void testPostgresCompatibleRendererUsesDirectFilteredProductGlobalSum() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable(
+            "partsupp",
+            List.of("ps_partkey", "ps_suppkey", "ps_availqty", "ps_supplycost")
+        );
+        schemaRegistry.registerTable("supplier", List.of("s_suppkey", "s_nationkey"));
+        schemaRegistry.registerTable("nation", List.of("n_nationkey", "n_name"));
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+
+        var sql = normalizeWhitespace(postgresTranslator.translate("""
+            SELECT ps_partkey, SUM(ps_supplycost * ps_availqty) AS value
+            FROM partsupp, supplier, nation
+            WHERE ps_suppkey = s_suppkey
+              AND s_nationkey = n_nationkey
+              AND n_name = 'GERMANY'
+            GROUP BY ps_partkey
+            HAVING SUM(ps_supplycost * ps_availqty) > (
+                SELECT SUM(ps_supplycost * ps_availqty) * .0001
+                FROM partsupp, supplier, nation
+                WHERE ps_suppkey = s_suppkey
+                  AND s_nationkey = n_nationkey
+                  AND n_name = 'GERMANY'
+            )
+            """));
+
+        assertFalse(sql.contains("all_ids_product_6"));
+        assertFalse(sql.contains("filter_7_id"));
+        assertContainsSql(sql,
+            "grouped_group_8 AS MATERIALIZED ( SELECT COALESCE(CAST(MIN(CAST(direct_group_attr_0.id AS TEXT)) AS UUID), CAST('00000000-0000-0000-0000-000000000000' AS UUID)) AS id, SUM(direct_group_attr_5.v * direct_group_attr_6.v) AS agg_expr_1 FROM nation_n_name AS direct_group_attr_0"
+        );
+        assertTrue(sql.contains("JOIN partsupp_ps_supplycost AS direct_group_attr_5"));
+        assertTrue(sql.contains("JOIN partsupp_ps_availqty AS direct_group_attr_6"));
+        assertTrue(sql.contains("WHERE direct_group_attr_0.v = 'GERMANY'"));
     }
 
     @Test

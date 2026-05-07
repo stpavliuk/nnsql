@@ -15,6 +15,8 @@ import nnsql.query.renderer.RenderContext;
 import nnsql.util.Option;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -31,6 +33,7 @@ class GroupRenderer {
     void render(Group group, RenderContext ctx, String baseName, String inputBaseName) {
         var groupedDataName = "grouped_" + baseName;
         if (!addDirectGlobalSumCTE(ctx, groupedDataName, group)
+            && !addDirectFilteredProductGlobalSumCTE(ctx, groupedDataName, group)
             && !addDirectSingleTableFilteredGroupCTE(ctx, groupedDataName, group)) {
             addGroupedDataCTE(ctx, groupedDataName, inputBaseName, group);
         }
@@ -111,8 +114,7 @@ class GroupRenderer {
             return false;
         }
 
-        var requiredColumns = new LinkedHashSet<String>();
-        requiredColumns.addAll(filterColumns);
+        var requiredColumns = new LinkedHashSet<>(filterColumns);
         requiredColumns.addAll(group.groupingAttributes());
         group.aggregates().stream()
             .map(IRExpression.Aggregate::argument)
@@ -242,6 +244,206 @@ class GroupRenderer {
 
         ctx.addCTE(groupedDataName, ps);
         return true;
+    }
+
+    private boolean addDirectFilteredProductGlobalSumCTE(
+        RenderContext ctx,
+        String groupedDataName,
+        Group group
+    ) {
+        if (!group.groupingAttributes().isEmpty()
+            || group.aggregates().size() != 1
+            || group.aggregates().stream().anyMatch(aggregate ->
+                !"SUM".equals(aggregate.function()) || aggregate.distinct())
+            || !(group.input() instanceof Filter filter)
+            || !(filter.input() instanceof Product product)
+            || product.relations().size() <= 1
+            || product.joinPredicates().isEmpty()
+            || product.relations().stream().anyMatch(relation -> !(relation instanceof Relation.Table))
+            || !canRenderDirectCondition(filter.condition())) {
+            return false;
+        }
+
+        if (group.aggregates().stream().map(IRExpression.Aggregate::argument).anyMatch(argument ->
+            !canRenderDirectExpression(argument))) {
+            return false;
+        }
+
+        var filterColumns = ExpressionSqlRenderer.collectColumnsFromCondition(filter.condition());
+        if (filterColumns.isEmpty()) {
+            return false;
+        }
+
+        var requiredColumns = new LinkedHashSet<>(filterColumns);
+        product.joinPredicates().forEach(predicate -> {
+            requiredColumns.add(qualifiedJoinAttribute(product, predicate.leftRelIndex(), predicate.leftAttr()));
+            requiredColumns.add(qualifiedJoinAttribute(product, predicate.rightRelIndex(), predicate.rightAttr()));
+        });
+        group.aggregates().stream()
+            .map(IRExpression.Aggregate::argument)
+            .map(ExpressionSqlRenderer::collectColumns)
+            .forEach(requiredColumns::addAll);
+        if (requiredColumns.isEmpty()) {
+            return false;
+        }
+
+        var bindings = new LinkedHashMap<String, ColumnBinding>();
+        for (var columnName : requiredColumns) {
+            var binding = bindProductColumn(product, columnName);
+            if (binding.isNone()) {
+                return false;
+            }
+            bindings.put(columnName, binding.get());
+        }
+
+        var aliases = new LinkedHashMap<String, String>();
+        var columns = new ArrayList<>(requiredColumns);
+        for (int i = 0; i < columns.size(); i++) {
+            aliases.put(columns.get(i), "direct_group_attr_" + i);
+        }
+
+        var anchorColumn = filterColumns.getFirst();
+        var anchorBinding = bindings.get(anchorColumn);
+        var anchorAlias = aliases.get(anchorColumn);
+
+        var ps = new PlainSelect();
+        ps.setFromItem(tableAs(
+            attrTable(anchorBinding.relation().tableName(), anchorBinding.sourceAttribute()),
+            anchorAlias
+        ));
+        ps.addSelectItem(groupRepresentativeId(column(anchorAlias, "id"), group), new Alias("id", true));
+
+        var joins = buildDirectProductJoins(product, columns, aliases, bindings, anchorColumn);
+        if (joins.isNone()) {
+            return false;
+        }
+        if (!joins.get().isEmpty()) {
+            ps.setJoins(joins.get());
+        }
+
+        var predicate = renderDirectCondition(filter.condition(), aliases);
+        if (predicate.isNone()) {
+            return false;
+        }
+        ps.setWhere(predicate.get());
+
+        for (var aggregate : group.aggregates()) {
+            ps.addSelectItem(
+                fn(aggregate.function(), renderDirectExpression(aggregate.argument(), aliases)),
+                new Alias(aggregate.alias(), true)
+            );
+        }
+
+        ctx.addCTE(groupedDataName, ps);
+        return true;
+    }
+
+    private Option<List<Join>> buildDirectProductJoins(
+        Product product,
+        List<String> columns,
+        LinkedHashMap<String, String> aliases,
+        LinkedHashMap<String, ColumnBinding> bindings,
+        String anchorColumn
+    ) {
+        var joins = new ArrayList<Join>();
+        var joinedColumns = new HashSet<String>();
+        var relationAnchors = new HashMap<Integer, String>();
+
+        joinedColumns.add(anchorColumn);
+        relationAnchors.put(bindings.get(anchorColumn).relationIndex(), aliases.get(anchorColumn));
+
+        while (joinedColumns.size() < columns.size()) {
+            var progressed = false;
+
+            for (var columnName : columns) {
+                if (joinedColumns.contains(columnName)) {
+                    continue;
+                }
+                var binding = bindings.get(columnName);
+                var relationAnchor = relationAnchors.get(binding.relationIndex());
+                if (relationAnchor == null) {
+                    continue;
+                }
+
+                var alias = aliases.get(columnName);
+                joins.add(join(
+                    tableAs(attrTable(binding.relation().tableName(), binding.sourceAttribute()), alias),
+                    new EqualsTo(column(alias, "id"), column(relationAnchor, "id"))
+                ));
+                joinedColumns.add(columnName);
+                progressed = true;
+            }
+
+            if (progressed) {
+                continue;
+            }
+
+            var joinBridge = nextJoinBridge(product, columns, aliases, bindings, joinedColumns);
+            if (joinBridge.isNone()) {
+                return Option.none();
+            }
+
+            var bridge = joinBridge.get();
+            joins.add(join(
+                tableAs(attrTable(bridge.newColumn().relation().tableName(), bridge.newColumn().sourceAttribute()),
+                    bridge.newAlias()),
+                new EqualsTo(column(bridge.existingAlias(), "v"), column(bridge.newAlias(), "v"))
+            ));
+            joinedColumns.add(bridge.newColumnName());
+            relationAnchors.put(bridge.newColumn().relationIndex(), bridge.newAlias());
+        }
+
+        return Option.some(joins);
+    }
+
+    private Option<JoinBridge> nextJoinBridge(
+        Product product,
+        List<String> columns,
+        LinkedHashMap<String, String> aliases,
+        LinkedHashMap<String, ColumnBinding> bindings,
+        HashSet<String> joinedColumns
+    ) {
+        for (var predicate : product.joinPredicates()) {
+            var leftColumn = qualifiedJoinAttribute(product, predicate.leftRelIndex(), predicate.leftAttr());
+            var rightColumn = qualifiedJoinAttribute(product, predicate.rightRelIndex(), predicate.rightAttr());
+
+            var leftJoined = joinedColumns.contains(leftColumn);
+            var rightJoined = joinedColumns.contains(rightColumn);
+            if (leftJoined == rightJoined || !columns.contains(leftColumn) || !columns.contains(rightColumn)) {
+                continue;
+            }
+
+            var newColumn = leftJoined ? rightColumn : leftColumn;
+            var existingColumn = leftJoined ? leftColumn : rightColumn;
+            return Option.some(new JoinBridge(
+                newColumn,
+                bindings.get(newColumn),
+                aliases.get(newColumn),
+                aliases.get(existingColumn)
+            ));
+        }
+
+        return Option.none();
+    }
+
+    private String qualifiedJoinAttribute(Product product, int relationIndex, String attribute) {
+        var relation = product.relations().get(relationIndex);
+        return relation.alias() + "_" + attribute;
+    }
+
+    private Option<ColumnBinding> bindProductColumn(Product product, String columnName) {
+        for (int index = 0; index < product.relations().size(); index++) {
+            if (!(product.relations().get(index) instanceof Relation.Table relation)) {
+                return Option.none();
+            }
+
+            var sourceAttribute = unqualifiedAttribute(columnName, relation);
+            if (relation.attributes().contains(sourceAttribute)) {
+                return Option.some(new ColumnBinding(index, relation, sourceAttribute));
+            }
+        }
+
+        return Option.none();
     }
 
     private Expression groupRepresentativeId(Expression inputIdExpression, Group group) {
@@ -501,6 +703,21 @@ class GroupRenderer {
         String valueAlias,
         Expression presentExpr,
         Expression valueExpr
+    ) {
+    }
+
+    private record ColumnBinding(
+        int relationIndex,
+        Relation.Table relation,
+        String sourceAttribute
+    ) {
+    }
+
+    private record JoinBridge(
+        String newColumnName,
+        ColumnBinding newColumn,
+        String newAlias,
+        String existingAlias
     ) {
     }
 }
