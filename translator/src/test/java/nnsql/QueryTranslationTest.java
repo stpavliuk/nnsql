@@ -925,6 +925,28 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testDirectGroupedInSubqueryUsesInnerJoinForNullRejectingAggregate() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.A IN (SELECT S.B FROM S GROUP BY S.B HAVING SUM(S.C) > 10)"
+        ));
+
+        assertTrue(sql.contains(
+            "SELECT S_B.v FROM S_B JOIN S_C ON S_C.id = S_B.id GROUP BY S_B.v HAVING SUM(S_C.v) > 10.0"
+        ));
+    }
+
+    @Test
+    void testDirectGroupedInSubqueryKeepsLeftJoinForCountAggregate() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R WHERE R.A IN (SELECT S.B FROM S GROUP BY S.B HAVING COUNT(S.C) = 0)"
+        ));
+
+        assertTrue(sql.contains(
+            "SELECT S_B.v FROM S_B LEFT JOIN S_C ON S_C.id = S_B.id GROUP BY S_B.v HAVING COUNT(S_C.v) = 0.0"
+        ));
+    }
+
+    @Test
     void testOrderByAndLimit() {
         var orderedSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R ORDER BY R.A LIMIT 10"

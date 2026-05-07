@@ -973,13 +973,21 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         var ps = new PlainSelect();
         ps.addSelectItem(column(groupingAttrTbl, "v"));
         ps.setFromItem(groupingAttrTbl);
-        ps.addJoins(leftJoin(
-            aggregateAttrTbl,
-            new EqualsTo(column(aggregateAttrTbl, "id"), column(groupingAttrTbl, "id"))
-        ));
+        var aggregateJoinCondition = new EqualsTo(
+            column(aggregateAttrTbl, "id"),
+            column(groupingAttrTbl, "id")
+        );
+        var aggregateJoin = aggregateReturnsNullForMissingArgument(aggregate)
+            ? join(aggregateAttrTbl, aggregateJoinCondition)
+            : leftJoin(aggregateAttrTbl, aggregateJoinCondition);
+        ps.addJoins(aggregateJoin);
         ps.addGroupByColumnReference(column(groupingAttrTbl, "v"));
         ps.setHaving(having.get());
         return Optional.of(ps);
+    }
+
+    private boolean aggregateReturnsNullForMissingArgument(IRExpression.Aggregate aggregate) {
+        return !"COUNT".equals(aggregate.function());
     }
 
     private Optional<Expression> renderDirectAggregateHaving(
