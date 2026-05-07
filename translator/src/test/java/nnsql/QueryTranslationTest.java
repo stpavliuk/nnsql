@@ -545,13 +545,26 @@ class QueryTranslationTest {
     }
 
     @Test
-    void testTopLevelJoinInSubqueryPredicateStaysAtProductBoundary() {
+    void testTopLevelJoinPositiveInSubqueryPredicatePushesIntoBaseRelation() {
         var sql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R, S WHERE R.B = S.B AND S.C IN (SELECT T.D FROM T WHERE T.E > 0)"
         ));
 
         assertTrue(sql.contains("all_ids_product_0 AS"));
-        assertTrue(sql.contains("product_0_S_C.v IN (SELECT v FROM return_4_attr_T_D)"));
+        assertTrue(sql.contains("return_6_id AS S__ID"));
+        assertTrue(sql.contains("product_1_S_C.v IN (SELECT v FROM return_5_attr_T_D)"));
+        assertFalse(sql.contains("product_0_S_C.v IN"));
+        assertTrue(sql.contains("T_E.v > 0.0"));
+    }
+
+    @Test
+    void testTopLevelJoinNotInSubqueryPredicateStaysAtProductBoundary() {
+        var sql = normalizeWhitespace(translator.translate(
+            "SELECT R.A FROM R, S WHERE R.B = S.B AND S.C NOT IN (SELECT T.D FROM T WHERE T.E > 0)"
+        ));
+
+        assertTrue(sql.contains("all_ids_product_0 AS"));
+        assertTrue(sql.contains("product_0_S_C.v NOT IN (SELECT v FROM return_4_attr_T_D)"));
         assertTrue(sql.contains("T_E.v > 0.0"));
     }
 
