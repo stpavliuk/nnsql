@@ -184,7 +184,7 @@ class GroupRenderer {
         Group group
     ) {
         if (group.groupingAttributes().isEmpty()
-            || group.aggregates().size() != 1
+            || group.aggregates().isEmpty()
             || group.aggregates().stream().anyMatch(aggregate ->
                 !"SUM".equals(aggregate.function()) || aggregate.distinct())
             || !(group.input() instanceof Product product)
