@@ -3,6 +3,7 @@ package nnsql.query.renderer.sql;
 import net.sf.jsqlparser.expression.Alias;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.Function;
+import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.select.ParenthesedSelect;
 import net.sf.jsqlparser.statement.select.PlainSelect;
 import net.sf.jsqlparser.statement.select.WithItem;
@@ -111,9 +112,20 @@ final class SqlQueryDocument {
 
     private boolean shouldForceOptimizerInline(CTE cte) {
         return referenceCounts.getOrDefault(cte.name(), 0) > 1
-            && cte.name().startsWith("filter_")
+            && (isReusableSimpleFilter(cte) || isReusableBaseAttributeScan(cte));
+    }
+
+    private static boolean isReusableSimpleFilter(CTE cte) {
+        return cte.name().startsWith("filter_")
             && cte.name().endsWith("_id")
             && isSimpleFilteredAttributeScan(cte.definition());
+    }
+
+    private static boolean isReusableBaseAttributeScan(CTE cte) {
+        return cte.name().startsWith("product_")
+            && cte.definition().getFromItem() instanceof Table table
+            && cte.name().endsWith("_" + table.getName())
+            && isSimpleAttributeScan(cte.definition());
     }
 
     private static boolean isSimpleFilteredAttributeScan(PlainSelect select) {
@@ -132,6 +144,21 @@ final class SqlQueryDocument {
                 var alias = item.getAlias();
                 return alias != null && alias.getName().startsWith("filter_attr_");
             });
+    }
+
+    private static boolean isSimpleAttributeScan(PlainSelect select) {
+        return select.getFromItem() != null
+            && (select.getJoins() == null || select.getJoins().isEmpty())
+            && select.getWhere() == null
+            && select.getGroupBy() == null
+            && select.getHaving() == null
+            && select.getSelectItems().size() == 2
+            && select.getSelectItems().stream()
+                .allMatch(item -> {
+                    var expression = item.getExpression().toString();
+                    return expression.endsWith(".id") || expression.endsWith(".v");
+                })
+            && !containsAggregate(select);
     }
 
     private static boolean isAggregateBoundary(PlainSelect select) {

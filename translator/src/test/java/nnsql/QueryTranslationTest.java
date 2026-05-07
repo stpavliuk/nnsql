@@ -1236,6 +1236,20 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererDoesNotFenceReusableBaseAttributeScans() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("R", List.of("A"));
+
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            "SELECT R.A FROM R WHERE R.A > (SELECT AVG(R.A) FROM R)"
+        ));
+
+        assertTrue(sql.contains("product_0_R_A AS NOT MATERIALIZED"));
+        assertTrue(sql.contains("grouped_group_3 AS MATERIALIZED"));
+    }
+
+    @Test
     void testPostgresCompatibleRendererUsesDirectFilteredSingleTableGroup() {
         var postgresTranslator = new QueryTranslator(schemaRegistryWithLineitemQ1Columns(), SQLIRRenderer.postgresCompatible());
         var sql = normalizeWhitespace(postgresTranslator.translate(
