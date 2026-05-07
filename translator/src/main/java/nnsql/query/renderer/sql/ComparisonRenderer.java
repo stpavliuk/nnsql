@@ -3,6 +3,7 @@ package nnsql.query.renderer.sql;
 import net.sf.jsqlparser.expression.*;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
 import net.sf.jsqlparser.expression.operators.relational.InExpression;
+import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.select.*;
 
 import nnsql.query.ir.*;
@@ -31,6 +32,12 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
     record RenderedValueSubquery(
         PlainSelect values,
         PlainSelect nullRows
+    ) {
+    }
+
+    record InlinedInSubquery(
+        Expression predicate,
+        List<String> requiredColumns
     ) {
     }
 
@@ -107,6 +114,29 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.Aggregate _ ->
                 throw unsupported(inSubquery.left().getClass().getSimpleName());
         };
+    }
+
+    Optional<InlinedInSubquery> inlinePositiveInSubquery(
+        Condition.InSubquery inSubquery,
+        String rel
+    ) {
+        if (inSubquery.isNegated()) {
+            return Optional.empty();
+        }
+
+        return renderDirectInMembershipSubquery(inSubquery.subquery()).flatMap(directMembershipSubquery -> switch (inSubquery.left()) {
+            case IRExpression.ColumnRef(var col) -> Optional.of(new InlinedInSubquery(
+                inPredicate(column(attrTable(rel, col), "v"), directMembershipSubquery, false),
+                List.of(col)
+            ));
+            case IRExpression.Literal lit -> Optional.of(new InlinedInSubquery(
+                inPredicate(literal(lit), directMembershipSubquery, false),
+                List.of()
+            ));
+            case IRExpression.BinaryOp _, IRExpression.Cast _, IRExpression.CaseWhen _,
+                 IRExpression.FunctionCall _, IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->
+                Optional.empty();
+        });
     }
 
     Optional<InlinedCorrelatedComparison> inlineCorrelatedComparison(
@@ -1024,6 +1054,11 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
     }
 
     private Optional<PlainSelect> renderDirectInMembershipSubquery(IRNode subqueryIR) {
+        var simpleMembership = renderDirectSimpleMembershipSubquery(subqueryIR);
+        if (simpleMembership.isPresent()) {
+            return simpleMembership;
+        }
+
         if (!(subqueryIR instanceof Return returnNode)
             || returnNode.selectStar()
             || returnNode.selectedAttributes().size() != 1
@@ -1059,6 +1094,197 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         }
 
         return Optional.empty();
+    }
+
+    private Optional<PlainSelect> renderDirectSimpleMembershipSubquery(IRNode subqueryIR) {
+        if (!(subqueryIR instanceof Return returnNode)
+            || returnNode.selectStar()
+            || returnNode.selectedAttributes().size() != 1
+            || !(returnNode.selectedAttributes().getFirst().source() instanceof IRExpression.ColumnRef(var selectedColumn))) {
+            return Optional.empty();
+        }
+
+        return simpleSingleTableMembershipInput(returnNode.input())
+            .flatMap(input -> renderDirectSimpleMembershipSubquery(input, selectedColumn));
+    }
+
+    private Optional<SimpleMembershipInput> simpleSingleTableMembershipInput(IRNode node) {
+        return switch (node) {
+            case Product product -> simpleSingleTableProduct(product)
+                .map(relation -> new SimpleMembershipInput(relation, nnsql.util.Option.none()));
+            case Filter(var input, var condition, _) -> simpleSingleTableMembershipInput(input)
+                .map(membership -> new SimpleMembershipInput(membership.relation(), nnsql.util.Option.some(condition)));
+            default -> Optional.empty();
+        };
+    }
+
+    private Optional<Relation.Table> simpleSingleTableProduct(Product product) {
+        if (product.relations().size() != 1 || !product.joinPredicates().isEmpty()) {
+            return Optional.empty();
+        }
+
+        return switch (product.relations().getFirst()) {
+            case Relation.Table relation -> Optional.of(relation);
+            case Relation.Subquery _ -> Optional.empty();
+        };
+    }
+
+    private Optional<PlainSelect> renderDirectSimpleMembershipSubquery(
+        SimpleMembershipInput input,
+        String selectedColumn
+    ) {
+        var conditionColumns = collectDirectSimpleMembershipConditionColumns(input.condition());
+        if (conditionColumns.isEmpty()) {
+            return Optional.empty();
+        }
+        var requiredColumns = new ArrayList<>(conditionColumns.get());
+        requiredColumns.add(selectedColumn);
+        requiredColumns = new ArrayList<>(requiredColumns.stream().distinct().toList());
+        if (!allAttributesBelongToRelation(requiredColumns, input.relation())) {
+            return Optional.empty();
+        }
+
+        var attributeTables = new LinkedHashMap<String, Table>();
+        for (var columnName : requiredColumns) {
+            attributeTables.put(columnName, table(attrTable(
+                input.relation().tableName(),
+                unqualifiedAttribute(columnName, input.relation())
+            )));
+        }
+
+        var anchorColumn = requiredColumns.getFirst();
+        var anchorTable = attributeTables.get(anchorColumn);
+        var selectedTable = attributeTables.get(selectedColumn);
+
+        var ps = new PlainSelect();
+        ps.addSelectItem(column(selectedTable, "v"));
+        ps.setFromItem(anchorTable);
+
+        var joins = new ArrayList<Join>();
+        attributeTables.forEach((columnName, attributeTable) -> {
+            if (columnName.equals(anchorColumn)) {
+                return;
+            }
+            joins.add(join(
+                attributeTable,
+                new EqualsTo(
+                    column(attributeTable, "id"),
+                    column(anchorTable, "id")
+                )
+            ));
+        });
+
+        if (!joins.isEmpty()) {
+            ps.setJoins(joins);
+        }
+
+        var condition = renderOptionalDirectSimpleMembershipCondition(input.condition(), attributeTables);
+        if (condition.isEmpty()) {
+            return Optional.empty();
+        }
+        condition.get().ifPresent(ps::setWhere);
+
+        return Optional.of(ps);
+    }
+
+    private Optional<List<String>> collectDirectSimpleMembershipConditionColumns(
+        nnsql.util.Option<Condition> condition
+    ) {
+        if (condition.isNone()) {
+            return Optional.of(List.of());
+        }
+
+        try {
+            return Optional.of(ExpressionSqlRenderer.collectColumnsFromCondition(condition.get()));
+        } catch (UnsupportedOperationException _) {
+            return Optional.empty();
+        }
+    }
+
+    private Optional<Optional<Expression>> renderOptionalDirectSimpleMembershipCondition(
+        nnsql.util.Option<Condition> condition,
+        LinkedHashMap<String, Table> attributeTables
+    ) {
+        if (condition.isNone()) {
+            return Optional.of(Optional.empty());
+        }
+
+        var rendered = renderDirectSimpleMembershipCondition(condition.get(), attributeTables);
+        if (rendered.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(rendered);
+    }
+
+    private Optional<Expression> renderDirectSimpleMembershipCondition(
+        Condition condition,
+        LinkedHashMap<String, Table> attributeTables
+    ) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, var operator) -> {
+                var leftExpr = renderDirectSimpleMembershipExpression(left, attributeTables);
+                var rightExpr = renderDirectSimpleMembershipExpression(right, attributeTables);
+                if (leftExpr.isEmpty() || rightExpr.isEmpty()) {
+                    yield Optional.empty();
+                }
+                yield Optional.of(comparison(leftExpr.get(), operator, rightExpr.get()));
+            }
+            case Condition.Like(var left, var pattern, var negated) -> {
+                var leftExpr = renderDirectSimpleMembershipExpression(left, attributeTables);
+                var patternExpr = renderDirectSimpleMembershipExpression(pattern, attributeTables);
+                if (leftExpr.isEmpty() || patternExpr.isEmpty()) {
+                    yield Optional.empty();
+                }
+                yield Optional.of(like(leftExpr.get(), patternExpr.get(), negated));
+            }
+            case Condition.And(var operands) ->
+                renderDirectSimpleMembershipLogicalCondition(operands, attributeTables, true);
+            case Condition.Or(var operands) ->
+                renderDirectSimpleMembershipLogicalCondition(operands, attributeTables, false);
+            case Condition.Not(var operand) -> renderDirectSimpleMembershipCondition(operand, attributeTables)
+                .map(expr -> not(paren(expr)));
+            case Condition.IsNull _, Condition.Exists _, Condition.InSubquery _ -> Optional.empty();
+        };
+    }
+
+    private Optional<Expression> renderDirectSimpleMembershipLogicalCondition(
+        List<Condition> operands,
+        LinkedHashMap<String, Table> attributeTables,
+        boolean conjunction
+    ) {
+        var rendered = new ArrayList<Expression>();
+        for (var operand : operands) {
+            var expression = renderDirectSimpleMembershipCondition(operand, attributeTables);
+            if (expression.isEmpty()) {
+                return Optional.empty();
+            }
+            rendered.add(paren(expression.get()));
+        }
+        return Optional.of(conjunction ? andAll(rendered) : orAll(rendered));
+    }
+
+    private Optional<Expression> renderDirectSimpleMembershipExpression(
+        IRExpression expression,
+        LinkedHashMap<String, Table> attributeTables
+    ) {
+        return switch (expression) {
+            case IRExpression.ColumnRef(var columnName) -> Optional.ofNullable(attributeTables.get(columnName))
+                .map(attributeTable -> column(attributeTable, "v"));
+            case IRExpression.Literal literal -> Optional.of(literal(literal));
+            case IRExpression.BinaryOp(var left, var operator, var right) -> {
+                var leftExpr = renderDirectSimpleMembershipExpression(left, attributeTables);
+                var rightExpr = renderDirectSimpleMembershipExpression(right, attributeTables);
+                if (leftExpr.isEmpty() || rightExpr.isEmpty()) {
+                    yield Optional.empty();
+                }
+                yield Optional.of(arithmetic(leftExpr.get(), operator.toSql(), rightExpr.get()));
+            }
+            case IRExpression.Cast(var inner, var targetType) ->
+                renderDirectSimpleMembershipExpression(inner, attributeTables)
+                    .map(innerExpr -> new CastExpression("CAST", innerExpr, targetType));
+            case IRExpression.FunctionCall _, IRExpression.CaseWhen _,
+                 IRExpression.Aggregate _, IRExpression.ScalarSubquery _ -> Optional.empty();
+        };
     }
 
     private Optional<PlainSelect> renderDirectGroupedMembershipSubquery(
@@ -1157,6 +1383,12 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         return attributes.stream()
             .map(attribute -> unqualifiedAttribute(attribute, relation))
             .allMatch(sourceAttributes::contains);
+    }
+
+    private record SimpleMembershipInput(
+        Relation.Table relation,
+        nnsql.util.Option<Condition> condition
+    ) {
     }
 
     private UnsupportedOperationException unsupported(String type) {

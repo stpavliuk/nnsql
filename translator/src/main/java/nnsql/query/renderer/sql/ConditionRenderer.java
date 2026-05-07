@@ -55,6 +55,9 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
             if (inlineCondition(operand, relationName).map(inlinePredicates::add).orElse(false)) {
                 continue;
             }
+            if (inlinePositiveInSubquery(operand, relationName).map(inlinePredicates::add).orElse(false)) {
+                continue;
+            }
             if (operand instanceof Condition.Comparison comparison
                 && comparisonRenderer.inlineCorrelatedComparison(comparison, relationName, ctx)
                 .map(inlinedCorrelatedComparisons::add)
@@ -686,6 +689,8 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
                 inlineLogicalCondition(Condition.and(operands), operands, relationName, true);
             case Condition.Or(var operands) ->
                 inlineLogicalCondition(Condition.or(operands), operands, relationName, false);
+            case Condition.InSubquery inSubquery -> inlinePositiveInSubquery(inSubquery, relationName);
+            case Condition.Not(var operand) when operand instanceof Condition.InSubquery -> java.util.Optional.empty();
             case Condition.Not(var operand) -> inlineCondition(operand, relationName)
                 .map(inline -> new InlinePredicate(
                     condition,
@@ -694,6 +699,27 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
                 ));
             default -> java.util.Optional.empty();
         };
+    }
+
+    private java.util.Optional<InlinePredicate> inlinePositiveInSubquery(
+        Condition condition,
+        String relationName
+    ) {
+        return condition instanceof Condition.InSubquery inSubquery
+            ? inlinePositiveInSubquery(inSubquery, relationName)
+            : java.util.Optional.empty();
+    }
+
+    private java.util.Optional<InlinePredicate> inlinePositiveInSubquery(
+        Condition.InSubquery inSubquery,
+        String relationName
+    ) {
+        return comparisonRenderer.inlinePositiveInSubquery(inSubquery, relationName)
+            .map(inline -> new InlinePredicate(
+                inSubquery,
+                inline.predicate(),
+                inline.requiredColumns()
+            ));
     }
 
     private java.util.Optional<InlinePredicate> inlineLogicalCondition(

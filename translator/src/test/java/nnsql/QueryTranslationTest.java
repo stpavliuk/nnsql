@@ -464,13 +464,13 @@ class QueryTranslationTest {
         var inSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.B IN (SELECT S.B FROM S WHERE S.C > 5)"
         ));
-        assertTrue(inSql.matches(".*product_0_R_B\\.v IN \\(SELECT v FROM return_\\d+_attr_S_B\\).*"));
+        assertTrue(inSql.contains("product_0_R_B.v IN (SELECT S_B.v FROM S_C JOIN S_B"));
         assertTrue(inSql.contains("S_C.v > 5.0"));
 
         var inWithAndSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.B IN (SELECT S.B FROM S) AND R.A > 10"
         ));
-        assertTrue(inWithAndSql.matches(".*product_0_R_B\\.v IN \\(SELECT v FROM return_\\d+_attr_S_B\\).*"));
+        assertTrue(inWithAndSql.contains("product_0_R_B.v IN (SELECT S_B.v FROM S_B)"));
         assertTrue(inWithAndSql.contains("product_0_R_A.v > 10.0"));
     }
 
@@ -548,8 +548,8 @@ class QueryTranslationTest {
         ));
 
         assertTrue(sql.contains("all_ids_product_0 AS"));
-        assertTrue(sql.contains("return_6_id AS S__ID"));
-        assertTrue(sql.contains("product_1_S_C.v IN (SELECT v FROM return_5_attr_T_D)"));
+        assertTrue(sql.contains("return_3_id AS S__ID"));
+        assertTrue(sql.contains("product_1_S_C.v IN (SELECT T_D.v FROM T_E JOIN T_D"));
         assertFalse(sql.contains("product_0_S_C.v IN"));
         assertTrue(sql.contains("T_E.v > 0.0"));
     }
