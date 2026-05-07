@@ -1307,6 +1307,21 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererFencesProductLookupsUsedTogetherInExpression() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("R", List.of("A", "C"));
+        schemaRegistry.registerTable("S", List.of("B", "D"));
+
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            "SELECT R.C + S.D AS amount FROM R, S WHERE R.A = S.B"
+        ));
+
+        assertTrue(sql.contains("product_0_R_C AS MATERIALIZED"));
+        assertTrue(sql.contains("product_0_S_D AS MATERIALIZED"));
+    }
+
+    @Test
     void testPostgresCompatibleRendererUsesDirectFilteredSingleTableGroup() {
         var postgresTranslator = new QueryTranslator(schemaRegistryWithLineitemQ1Columns(), SQLIRRenderer.postgresCompatible());
         var sql = normalizeWhitespace(postgresTranslator.translate(

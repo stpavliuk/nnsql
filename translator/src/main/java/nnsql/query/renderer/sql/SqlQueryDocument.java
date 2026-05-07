@@ -23,6 +23,7 @@ final class SqlQueryDocument {
     private final boolean forceInlineCtes;
     private final Map<String, Integer> referenceCounts;
     private final Set<String> aggregateBoundaryDependencies;
+    private final Set<String> multiAttributeExpressionInputs;
 
     private SqlQueryDocument(
         PlainSelect finalSelect,
@@ -30,7 +31,8 @@ final class SqlQueryDocument {
         SqlDialect dialect,
         boolean forceInlineCtes,
         Map<String, Integer> referenceCounts,
-        Set<String> aggregateBoundaryDependencies
+        Set<String> aggregateBoundaryDependencies,
+        Set<String> multiAttributeExpressionInputs
     ) {
         this.finalSelect = finalSelect;
         this.ctes = ctes;
@@ -38,6 +40,7 @@ final class SqlQueryDocument {
         this.forceInlineCtes = forceInlineCtes;
         this.referenceCounts = Map.copyOf(referenceCounts);
         this.aggregateBoundaryDependencies = Set.copyOf(aggregateBoundaryDependencies);
+        this.multiAttributeExpressionInputs = Set.copyOf(multiAttributeExpressionInputs);
     }
 
     static SqlQueryDocument from(
@@ -57,7 +60,8 @@ final class SqlQueryDocument {
             dialect,
             forceInlineCtes,
             referenceCounts(finalSelect, usedCTEs),
-            aggregateBoundaryDependencies(usedCTEs)
+            aggregateBoundaryDependencies(usedCTEs),
+            multiAttributeExpressionInputs(usedCTEs)
         );
     }
 
@@ -110,7 +114,8 @@ final class SqlQueryDocument {
     private boolean shouldMaterialize(CTE cte) {
         return referenceCounts.getOrDefault(cte.name(), 0) > 1
             || isAggregateBoundary(cte.definition())
-            || aggregateBoundaryDependencies.contains(cte.name());
+            || aggregateBoundaryDependencies.contains(cte.name())
+            || multiAttributeExpressionInputs.contains(cte.name());
     }
 
     private boolean shouldForceOptimizerInline(CTE cte) {
@@ -237,6 +242,34 @@ final class SqlQueryDocument {
             }
         }
         return result;
+    }
+
+    private static Set<String> multiAttributeExpressionInputs(List<CTE> ctes) {
+        var productLookupCTEs = new HashSet<String>();
+        for (var cte : ctes) {
+            if (isProductAttributeLookup(cte)) {
+                productLookupCTEs.add(cte.name());
+            }
+        }
+
+        var result = new HashSet<String>();
+        for (var cte : ctes) {
+            var lookupDependencies = cte.dependencies().stream()
+                .filter(productLookupCTEs::contains)
+                .toList();
+            if (lookupDependencies.size() > 1) {
+                result.addAll(lookupDependencies);
+            }
+        }
+        return result;
+    }
+
+    private static boolean isProductAttributeLookup(CTE cte) {
+        return cte.name().startsWith("product_")
+            && cte.definition().getFromItem() instanceof Table table
+            && table.getName().startsWith("all_ids_product_")
+            && cte.definition().getJoins() != null
+            && !cte.definition().getJoins().isEmpty();
     }
 
     private enum MaterializationMode {
