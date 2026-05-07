@@ -358,6 +358,29 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererDoesNotFenceReusableSimpleFilters() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("lineitem", List.of("l_orderkey", "l_shipdate"));
+        schemaRegistry.registerTable("orders", List.of("o_orderkey", "o_custkey"));
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            // language=sql
+            """
+                SELECT o_custkey, COUNT(*) AS order_count
+                FROM lineitem, orders
+                WHERE l_orderkey = o_orderkey
+                  AND l_shipdate >= '1995-01-01'
+                  AND l_shipdate <= '1996-12-31'
+                GROUP BY o_custkey
+                """
+        ));
+
+        assertTrue(sql.contains("filter_2_id AS NOT MATERIALIZED"));
+        assertTrue(sql.contains("grouped_group_4 AS MATERIALIZED"));
+    }
+
+    @Test
     void testInListPredicates() {
         var inSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.B IN (1, 2, 3)"
@@ -1199,7 +1222,7 @@ class QueryTranslationTest {
     }
 
     @Test
-    void testPostgresCompatibleRendererMaterializesSharedCtes() {
+    void testPostgresCompatibleRendererInlinesSharedSimpleFilters() {
         var schemaRegistry = new SchemaRegistry();
         schemaRegistry.registerTable("R", List.of("A", "B"));
 
@@ -1209,7 +1232,7 @@ class QueryTranslationTest {
         ));
 
         assertFalse(sql.contains("product_0_R_A AS MATERIALIZED"));
-        assertTrue(sql.contains("filter_1_id AS MATERIALIZED"));
+        assertTrue(sql.contains("filter_1_id AS NOT MATERIALIZED"));
     }
 
     @Test

@@ -58,12 +58,24 @@ final class SqlQueryDocument {
     }
 
     String toSql() {
-        if (!ctes.isEmpty()) {
-            finalSelect.setWithItemsList(ctes.stream()
-                .map(this::toWithItem)
-                .toList());
+        if (ctes.isEmpty()) {
+            return finalSelect + ";";
         }
-        return finalSelect + ";";
+
+        var withSql = ctes.stream()
+            .map(this::toWithItemSql)
+            .collect(java.util.stream.Collectors.joining(", "));
+        return "WITH %s %s;".formatted(withSql, finalSelect);
+    }
+
+    private String toWithItemSql(CTE cte) {
+        var withItem = toWithItem(cte);
+        var materialization = switch (materializationMode(cte)) {
+            case DEFAULT -> "";
+            case MATERIALIZED -> " MATERIALIZED";
+            case NOT_MATERIALIZED -> " NOT MATERIALIZED";
+        };
+        return "%s AS%s %s".formatted(withItem.getAlias(), materialization, withItem.getSelect());
     }
 
     private WithItem<?> toWithItem(CTE cte) {
@@ -73,16 +85,53 @@ final class SqlQueryDocument {
         var withItem = new WithItem<ParenthesedSelect>();
         withItem.setAlias(new Alias(cte.name(), false));
         withItem.setSelect(select);
-        withItem.setMaterialized(shouldMaterialize(cte));
         return withItem;
     }
 
+    private MaterializationMode materializationMode(CTE cte) {
+        if (!dialect.materializeCommonTableExpressions()) {
+            return MaterializationMode.DEFAULT;
+        }
+        if (forceInlineCtes) {
+            return MaterializationMode.DEFAULT;
+        }
+        if (shouldForceOptimizerInline(cte)) {
+            return MaterializationMode.NOT_MATERIALIZED;
+        }
+        return shouldMaterialize(cte)
+            ? MaterializationMode.MATERIALIZED
+            : MaterializationMode.DEFAULT;
+    }
+
     private boolean shouldMaterialize(CTE cte) {
-        return !forceInlineCtes
-            && dialect.materializeCommonTableExpressions()
-            && (referenceCounts.getOrDefault(cte.name(), 0) > 1
+        return referenceCounts.getOrDefault(cte.name(), 0) > 1
             || isAggregateBoundary(cte.definition())
-            || aggregateBoundaryDependencies.contains(cte.name()));
+            || aggregateBoundaryDependencies.contains(cte.name());
+    }
+
+    private boolean shouldForceOptimizerInline(CTE cte) {
+        return referenceCounts.getOrDefault(cte.name(), 0) > 1
+            && cte.name().startsWith("filter_")
+            && cte.name().endsWith("_id")
+            && isSimpleFilteredAttributeScan(cte.definition());
+    }
+
+    private static boolean isSimpleFilteredAttributeScan(PlainSelect select) {
+        return select.getFromItem() != null
+            && (select.getJoins() == null || select.getJoins().isEmpty())
+            && select.getWhere() != null
+            && select.getGroupBy() == null
+            && select.getHaving() == null
+            && hasFilterAttributeProjection(select)
+            && !containsAggregate(select);
+    }
+
+    private static boolean hasFilterAttributeProjection(PlainSelect select) {
+        return select.getSelectItems().stream()
+            .anyMatch(item -> {
+                var alias = item.getAlias();
+                return alias != null && alias.getName().startsWith("filter_attr_");
+            });
     }
 
     private static boolean isAggregateBoundary(PlainSelect select) {
@@ -139,5 +188,11 @@ final class SqlQueryDocument {
             }
         }
         return result;
+    }
+
+    private enum MaterializationMode {
+        DEFAULT,
+        MATERIALIZED,
+        NOT_MATERIALIZED
     }
 }
