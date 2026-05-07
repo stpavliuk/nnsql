@@ -1250,6 +1250,23 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererUsesWindowedAggregateMembershipSubquery() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("R", List.of("A"));
+        schemaRegistry.registerTable("S", List.of("B", "C"));
+
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            "SELECT R.A FROM R WHERE R.A IN (SELECT S.B FROM S GROUP BY S.B HAVING SUM(S.C) > 10)"
+        ));
+
+        assertTrue(sql.contains("SUM(S_C.v) OVER (PARTITION BY S_B.v)"));
+        assertTrue(sql.contains("ROW_NUMBER() OVER (PARTITION BY S_B.v)"));
+        assertTrue(sql.contains("grouped_membership.group_row_number = 1"));
+        assertFalse(sql.contains("GROUP BY S_B.v HAVING SUM(S_C.v)"));
+    }
+
+    @Test
     void testPostgresCompatibleRendererPrunesUnusedProjectedFilterAttributes() {
         var schemaRegistry = new SchemaRegistry();
         schemaRegistry.registerTable("R", List.of("A", "B"));

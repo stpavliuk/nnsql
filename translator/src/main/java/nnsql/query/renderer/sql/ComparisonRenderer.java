@@ -2,6 +2,7 @@ package nnsql.query.renderer.sql;
 
 import net.sf.jsqlparser.expression.*;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
 import net.sf.jsqlparser.expression.operators.relational.InExpression;
 import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.select.*;
@@ -1294,6 +1295,18 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         IRExpression.Aggregate aggregate,
         Condition havingCondition
     ) {
+        if (dialect.materializeCommonTableExpressions()
+            && "SUM".equals(aggregate.function())
+            && !aggregate.distinct()) {
+            return renderDirectWindowedGroupedMembershipSubquery(
+                relation,
+                groupingAttribute,
+                aggregateColumn,
+                aggregate,
+                havingCondition
+            );
+        }
+
         var groupingAttrTbl = table(attrTable(relation.tableName(), unqualifiedAttribute(groupingAttribute, relation)));
         var aggregateAttrTbl = table(attrTable(relation.tableName(), unqualifiedAttribute(aggregateColumn, relation)));
         var aggregateExpr = fn(aggregate.function(), column(aggregateAttrTbl, "v"));
@@ -1318,6 +1331,64 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         ps.addGroupByColumnReference(column(groupingAttrTbl, "v"));
         ps.setHaving(having.get());
         return Optional.of(ps);
+    }
+
+    private Optional<PlainSelect> renderDirectWindowedGroupedMembershipSubquery(
+        Relation.Table relation,
+        String groupingAttribute,
+        String aggregateColumn,
+        IRExpression.Aggregate aggregate,
+        Condition havingCondition
+    ) {
+        var groupingAttrTbl = table(attrTable(relation.tableName(), unqualifiedAttribute(groupingAttribute, relation)));
+        var aggregateAttrTbl = table(attrTable(relation.tableName(), unqualifiedAttribute(aggregateColumn, relation)));
+        var groupValue = column(groupingAttrTbl, "v");
+        var aggregateValue = column(aggregateAttrTbl, "v");
+        var aggregateAlias = aggregate.alias();
+        var rowNumberAlias = "group_row_number";
+
+        var windowInput = new PlainSelect();
+        windowInput.addSelectItem(groupValue, new Alias("v", true));
+        windowInput.addSelectItem(windowFunction(aggregate.function(), aggregateValue, groupValue), new Alias(aggregateAlias, true));
+        windowInput.addSelectItem(windowFunction("ROW_NUMBER", null, groupValue), new Alias(rowNumberAlias, true));
+        windowInput.setFromItem(groupingAttrTbl);
+        windowInput.addJoins(join(
+            aggregateAttrTbl,
+            new EqualsTo(
+                column(aggregateAttrTbl, "id"),
+                column(groupingAttrTbl, "id")
+            )
+        ));
+
+        var grouped = new ParenthesedSelect();
+        grouped.setSelect(windowInput);
+        grouped.setAlias(new Alias("grouped_membership", false));
+        var groupedTable = table("grouped_membership");
+
+        var aggregateExpr = column(groupedTable, aggregateAlias);
+        var having = renderDirectAggregateHaving(havingCondition, aggregateAlias, aggregateExpr);
+        if (having.isEmpty()) {
+            return Optional.empty();
+        }
+
+        var ps = new PlainSelect();
+        ps.addSelectItem(column(groupedTable, "v"));
+        ps.setFromItem(grouped);
+        ps.setWhere(and(
+            new EqualsTo(column(groupedTable, rowNumberAlias), new LongValue(1)),
+            having.get()
+        ));
+        return Optional.of(ps);
+    }
+
+    private AnalyticExpression windowFunction(String functionName, Expression argument, Expression partitionBy) {
+        var function = new AnalyticExpression();
+        function.setName(functionName);
+        if (argument != null) {
+            function.setExpression(argument);
+        }
+        function.setPartitionExpressionList(new ExpressionList<>(partitionBy));
+        return function;
     }
 
     private boolean aggregateReturnsNullForMissingArgument(IRExpression.Aggregate aggregate) {
