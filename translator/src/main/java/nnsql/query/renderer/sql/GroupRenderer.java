@@ -2,8 +2,10 @@ package nnsql.query.renderer.sql;
 
 import net.sf.jsqlparser.expression.*;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
 import net.sf.jsqlparser.expression.operators.relational.InExpression;
 import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
+import net.sf.jsqlparser.expression.operators.relational.ParenthesedExpressionList;
 import net.sf.jsqlparser.statement.select.*;
 
 import nnsql.query.ir.Condition;
@@ -761,7 +763,8 @@ class GroupRenderer {
                     isNegated
                 ));
             case Condition.And(var operands) -> renderDirectLogicalCondition(operands, aliases, true);
-            case Condition.Or(var operands) -> renderDirectLogicalCondition(operands, aliases, false);
+            case Condition.Or(var operands) -> renderDirectInListCondition(operands, aliases)
+                .or(() -> renderDirectLogicalCondition(operands, aliases, false));
             case Condition.Not(var operand) -> renderDirectCondition(operand, aliases)
                 .map(expr -> not(paren(expr)));
             case Condition.InSubquery(var left, var subquery, var isNegated) ->
@@ -812,6 +815,37 @@ class GroupRenderer {
             rendered.add(paren(expression.get()));
         }
         return Option.some(conjunction ? andAll(rendered) : orAll(rendered));
+    }
+
+    private Option<Expression> renderDirectInListCondition(
+        List<Condition> operands,
+        LinkedHashMap<String, String> aliases
+    ) {
+        if (operands.size() < 2) {
+            return Option.none();
+        }
+
+        String columnName = null;
+        var values = new ArrayList<Expression>();
+        for (var operand : operands) {
+            if (!(operand instanceof Condition.Comparison(var left, var right, var operator))
+                || !(left instanceof IRExpression.ColumnRef(var currentColumn))
+                || !(right instanceof IRExpression.Literal literal)
+                || !"=".equals(operator)) {
+                return Option.none();
+            }
+            if (columnName == null) {
+                columnName = currentColumn;
+            } else if (!columnName.equals(currentColumn)) {
+                return Option.none();
+            }
+            values.add(literal(literal));
+        }
+
+        var inExpression = new InExpression();
+        inExpression.setLeftExpression(renderDirectExpression(new IRExpression.ColumnRef(columnName), aliases));
+        inExpression.setRightExpression(new ParenthesedExpressionList<>(new ExpressionList<>(values)));
+        return Option.some(inExpression);
     }
 
     private boolean canRenderDirectCondition(Condition condition) {

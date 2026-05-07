@@ -1322,6 +1322,20 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererUsesInListForSameColumnDisjunction() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("R", List.of("A", "B"));
+
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            "SELECT R.A, COUNT(*) AS cnt FROM R WHERE R.B = 1 OR R.B = 2 OR R.B = 3 GROUP BY R.A"
+        ));
+
+        assertTrue(sql.contains("direct_group_attr_0.v IN (1.0, 2.0, 3.0)"));
+        assertFalse(sql.contains("direct_group_attr_0.v = 1.0 OR direct_group_attr_0.v = 2.0"));
+    }
+
+    @Test
     void testPostgresCompatibleRendererUsesDirectFilteredSingleTableGroup() {
         var postgresTranslator = new QueryTranslator(schemaRegistryWithLineitemQ1Columns(), SQLIRRenderer.postgresCompatible());
         var sql = normalizeWhitespace(postgresTranslator.translate(
