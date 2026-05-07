@@ -43,7 +43,17 @@ class QueryTranslationTest {
                 "l_extendedprice",
                 "l_discount",
                 "l_shipinstruct",
-                "l_shipmode"
+                "l_shipmode",
+                "l_suppkey",
+                "l_shipdate"
+            )
+        );
+        schemaRegistry.registerTable(
+            "partsupp",
+            List.of(
+                "ps_partkey",
+                "ps_suppkey",
+                "ps_availqty"
             )
         );
         schemaRegistry.registerTable(
@@ -1094,6 +1104,33 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererUsesDirectFilteredCorrelatedAggregate() {
+        var postgresTranslator = new QueryTranslator(schemaRegistryWithTpchTables(), SQLIRRenderer.postgresCompatible());
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            // language=sql
+            """
+                SELECT ps_suppkey
+                FROM partsupp
+                WHERE ps_availqty > (
+                    SELECT 0.5 * SUM(l_quantity)
+                    FROM lineitem
+                    WHERE l_partkey = ps_partkey
+                      AND l_suppkey = ps_suppkey
+                      AND l_shipdate >= '1994-01-01'
+                      AND l_shipdate < '1995-01-01'
+                )
+                """
+        ));
+
+        assertTrue(sql.contains("SELECT 0.5 * SUM("));
+        assertTrue(sql.contains("FROM lineitem__ID AS corr_agg_id_"));
+        assertTrue(sql.contains("lineitem_l_shipdate AS corr_agg_attr_"));
+        assertTrue(sql.contains("corr_agg_attr_"));
+        assertFalse(sql.contains("corr_subquery_"));
+        assertFalse(sql.contains("grouped_group_"));
+    }
+
+    @Test
     void testPostgresCompatibleRendererInlinesQ19StyleRevenueQuery() {
         var postgresTranslator = new QueryTranslator(schemaRegistryWithTpchTables(), SQLIRRenderer.postgresCompatible());
         var sql = normalizeWhitespace(postgresTranslator.translate(
@@ -1264,7 +1301,17 @@ class QueryTranslationTest {
                 "l_extendedprice",
                 "l_discount",
                 "l_shipinstruct",
-                "l_shipmode"
+                "l_shipmode",
+                "l_suppkey",
+                "l_shipdate"
+            )
+        );
+        schemaRegistry.registerTable(
+            "partsupp",
+            List.of(
+                "ps_partkey",
+                "ps_suppkey",
+                "ps_availqty"
             )
         );
         schemaRegistry.registerTable(

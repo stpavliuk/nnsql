@@ -139,7 +139,6 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
             .map(Sql::paren)
             .forEach(whereConditions::add);
         for (var inlinedComparison : inlinedCorrelatedComparisons) {
-            joins.add(simpleJoin(inlinedComparison.fromItem()));
             whereConditions.addAll(inlinedComparison.predicates());
         }
         inlinedCorrelatedExists.stream()
@@ -147,6 +146,9 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
             .forEach(whereConditions::add);
         whereConditions.addAll(fallbackConditions);
 
+        for (var inlinedComparison : inlinedCorrelatedComparisons) {
+            inlinedComparison.fromItems().forEach(fromItem -> joins.add(simpleJoin(fromItem)));
+        }
         if (!joins.isEmpty()) {
             ps.setJoins(joins);
         }

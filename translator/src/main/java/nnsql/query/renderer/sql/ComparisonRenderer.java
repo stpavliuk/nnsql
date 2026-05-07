@@ -22,7 +22,7 @@ import static nnsql.query.renderer.sql.Sql.*;
 record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRenderer, SqlDialect dialect) {
 
     record InlinedCorrelatedComparison(
-        FromItem fromItem,
+        List<FromItem> fromItems,
         List<Expression> predicates,
         List<String> requiredColumns
     ) {
@@ -125,13 +125,33 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             return Optional.empty();
         }
 
+        var predicates = new ArrayList<Expression>();
+        var requiredColumns = new ArrayList<String>();
+        requiredColumns.addAll(ExpressionSqlRenderer.collectColumns(comparison.left()));
+        requiredColumns.addAll(subquery.correlations().stream()
+            .map(IRExpression.Correlation::outerAttribute)
+            .toList());
+
+        var correlatedAggregate = renderDirectCorrelatedAggregate(subquery, rel, ctx);
+        if (correlatedAggregate.isPresent()) {
+            predicates.add(Sql.comparison(
+                ExpressionSqlRenderer.toSqlExpr(comparison.left(), rel, dialect),
+                comparison.operator(),
+                correlatedAggregate.get()
+            ));
+            return java.util.Optional.of(new InlinedCorrelatedComparison(
+                List.of(),
+                predicates,
+                requiredColumns.stream().distinct().toList()
+            ));
+        }
+
         var alias = ctx.nextName("corr_subquery_");
         var correlatedRows = renderCorrelatedSubqueryRows(subquery, ctx);
         var subqueryFromItem = new ParenthesedSelect();
         subqueryFromItem.setSelect(correlatedRows);
         subqueryFromItem.setAlias(new Alias(alias, false));
 
-        var predicates = new ArrayList<Expression>();
         predicates.add(Sql.comparison(
             ExpressionSqlRenderer.toSqlExpr(comparison.left(), rel, dialect),
             comparison.operator(),
@@ -145,14 +165,8 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             ));
         }
 
-        var requiredColumns = new ArrayList<String>();
-        requiredColumns.addAll(ExpressionSqlRenderer.collectColumns(comparison.left()));
-        requiredColumns.addAll(subquery.correlations().stream()
-            .map(IRExpression.Correlation::outerAttribute)
-            .toList());
-
         return java.util.Optional.of(new InlinedCorrelatedComparison(
-            subqueryFromItem,
+            List.of(subqueryFromItem),
             predicates,
             requiredColumns.stream().distinct().toList()
         ));
@@ -497,13 +511,33 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
 
         var root = subquery.subqueryPipeline().getFirst();
         if (!(root instanceof Return returnNode)
-            || !(returnNode.input() instanceof Group group)
-            || !(group.input() instanceof Product product)
+            || !(returnNode.input() instanceof Group group)) {
+            return Optional.empty();
+        }
+
+        var localFilterCondition = Optional.<Condition>empty();
+        var groupInput = group.input();
+        if (groupInput instanceof Filter filter) {
+            localFilterCondition = Optional.of(filter.condition());
+            groupInput = filter.input();
+        }
+
+        if (!(groupInput instanceof Product product)
             || product.relations().size() != 1
             || !product.joinPredicates().isEmpty()) {
             return Optional.empty();
         }
+
         if (!(product.relations().getFirst() instanceof Relation.Table relation)) {
+            return Optional.empty();
+        }
+
+        var filterColumns = localFilterCondition
+            .map(ExpressionSqlRenderer::collectColumnsFromCondition)
+            .orElseGet(List::of);
+        if (localFilterCondition.isPresent()
+            && (!canRenderDirectCondition(localFilterCondition.get())
+                || !allAttributesBelongToRelation(filterColumns, relation))) {
             return Optional.empty();
         }
 
@@ -529,6 +563,9 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         var attrAliases = new LinkedHashMap<String, String>();
         subquery.correlations().forEach(correlation ->
             attrAliases.computeIfAbsent(correlation.innerAttribute(), _ -> ctx.nextName("corr_agg_attr_"))
+        );
+        filterColumns.forEach(attribute ->
+            attrAliases.computeIfAbsent(attribute, _ -> ctx.nextName("corr_agg_attr_"))
         );
         group.aggregates().stream()
             .flatMap(aggregate -> ExpressionSqlRenderer.collectColumns(aggregate.argument()).stream())
@@ -557,7 +594,10 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
                 correlation.operator(),
                 column(attrTable(outerBaseName, correlation.outerAttribute()), "v")
             ))
-            .toList();
+            .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        localFilterCondition
+            .flatMap(condition -> renderDirectCondition(condition, attrAliases))
+            .ifPresent(correlationPredicates::add);
         select.setWhere(andAll(correlationPredicates));
 
         try {
@@ -635,6 +675,74 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             case IRExpression.FunctionCall _, IRExpression.CaseWhen _,
                  IRExpression.Aggregate _, IRExpression.ScalarSubquery _ ->
                 throw new UnsupportedOperationException("Unsupported correlated aggregate argument expression");
+        };
+    }
+
+    private Optional<Expression> renderDirectCondition(
+        Condition condition,
+        LinkedHashMap<String, String> aliases
+    ) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, var operator) ->
+                Optional.of(comparison(
+                    renderAggregateArgumentExpression(left, aliases),
+                    operator,
+                    renderAggregateArgumentExpression(right, aliases)
+                ));
+            case Condition.Like(var left, var pattern, var isNegated) ->
+                Optional.of(like(
+                    renderAggregateArgumentExpression(left, aliases),
+                    renderAggregateArgumentExpression(pattern, aliases),
+                    isNegated
+                ));
+            case Condition.And(var operands) -> renderDirectLogicalCondition(operands, aliases, true);
+            case Condition.Or(var operands) -> renderDirectLogicalCondition(operands, aliases, false);
+            case Condition.Not(var operand) -> renderDirectCondition(operand, aliases)
+                .map(expr -> not(paren(expr)));
+            case Condition.IsNull _, Condition.Exists _, Condition.InSubquery _ -> Optional.empty();
+        };
+    }
+
+    private Optional<Expression> renderDirectLogicalCondition(
+        List<Condition> operands,
+        LinkedHashMap<String, String> aliases,
+        boolean conjunction
+    ) {
+        var rendered = new ArrayList<Expression>();
+        for (var operand : operands) {
+            var expression = renderDirectCondition(operand, aliases);
+            if (expression.isEmpty()) {
+                return Optional.empty();
+            }
+            rendered.add(paren(expression.get()));
+        }
+        return Optional.of(conjunction ? andAll(rendered) : orAll(rendered));
+    }
+
+    private boolean canRenderDirectCondition(Condition condition) {
+        return switch (condition) {
+            case Condition.Comparison(var left, var right, _) ->
+                canRenderDirectExpression(left) && canRenderDirectExpression(right);
+            case Condition.Like(var left, var pattern, _) ->
+                canRenderDirectExpression(left) && canRenderDirectExpression(pattern);
+            case Condition.And(var operands) ->
+                operands.stream().allMatch(this::canRenderDirectCondition);
+            case Condition.Or(var operands) ->
+                operands.stream().allMatch(this::canRenderDirectCondition);
+            case Condition.Not(var operand) -> canRenderDirectCondition(operand);
+            case Condition.IsNull _, Condition.Exists _, Condition.InSubquery _ -> false;
+        };
+    }
+
+    private boolean canRenderDirectExpression(IRExpression expression) {
+        return switch (expression) {
+            case IRExpression.ColumnRef _, IRExpression.Literal _ -> true;
+            case IRExpression.BinaryOp(var left, _, var right) ->
+                canRenderDirectExpression(left) && canRenderDirectExpression(right);
+            case IRExpression.Cast(var inner, _) -> canRenderDirectExpression(inner);
+            case IRExpression.FunctionCall(_, var arguments) ->
+                arguments.stream().allMatch(this::canRenderDirectExpression);
+            case IRExpression.CaseWhen _, IRExpression.Aggregate _, IRExpression.ScalarSubquery _ -> false;
         };
     }
 
