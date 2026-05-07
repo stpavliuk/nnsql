@@ -284,6 +284,47 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererUsesDirectFilteredProductGroup() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("customer", List.of("c_custkey", "c_mktsegment"));
+        schemaRegistry.registerTable("orders", List.of("o_orderkey", "o_custkey", "o_orderdate", "o_shippriority"));
+        schemaRegistry.registerTable(
+            "lineitem",
+            List.of("l_orderkey", "l_extendedprice", "l_discount", "l_shipdate")
+        );
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            // language=sql
+            """
+                SELECT l_orderkey,
+                       SUM(l_extendedprice * (1 - l_discount)) AS revenue,
+                       o_orderdate,
+                       o_shippriority
+                FROM customer, orders, lineitem
+                WHERE c_mktsegment = 'BUILDING'
+                  AND c_custkey = o_custkey
+                  AND l_orderkey = o_orderkey
+                  AND o_orderdate < '1995-03-15'
+                  AND l_shipdate > '1995-03-15'
+                GROUP BY l_orderkey, o_orderdate, o_shippriority
+                ORDER BY revenue DESC, o_orderdate
+                LIMIT 10
+                """
+        ));
+
+        assertFalse(sql.contains("all_ids_product_0"));
+        assertTrue(sql.contains("grouped_group_10 AS MATERIALIZED"));
+        assertTrue(sql.contains("FROM customer_c_mktsegment AS direct_group_attr_0"));
+        assertTrue(sql.contains("JOIN orders_o_custkey AS direct_group_attr_4"));
+        assertTrue(sql.contains("JOIN lineitem_l_orderkey AS direct_group_attr_5"));
+        assertTrue(sql.contains("LEFT JOIN orders_o_shippriority AS direct_group_attr_7"));
+        assertTrue(sql.contains("LEFT JOIN lineitem_l_extendedprice AS direct_group_attr_8"));
+        assertTrue(sql.contains("LEFT JOIN lineitem_l_discount AS direct_group_attr_9"));
+        assertTrue(sql.contains("WHERE (direct_group_attr_0.v = 'BUILDING')"));
+    }
+
+    @Test
     void testInListPredicates() {
         var inSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.B IN (1, 2, 3)"

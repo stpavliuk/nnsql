@@ -34,6 +34,7 @@ class GroupRenderer {
         var groupedDataName = "grouped_" + baseName;
         if (!addDirectGlobalSumCTE(ctx, groupedDataName, group)
             && !addDirectFilteredProductGlobalSumCTE(ctx, groupedDataName, group)
+            && !addDirectFilteredProductGroupCTE(ctx, groupedDataName, group)
             && !addDirectSingleTableFilteredGroupCTE(ctx, groupedDataName, group)) {
             addGroupedDataCTE(ctx, groupedDataName, inputBaseName, group);
         }
@@ -177,6 +178,146 @@ class GroupRenderer {
         return true;
     }
 
+    private boolean addDirectFilteredProductGroupCTE(
+        RenderContext ctx,
+        String groupedDataName,
+        Group group
+    ) {
+        if (group.groupingAttributes().isEmpty()
+            || group.aggregates().size() != 1
+            || group.aggregates().stream().anyMatch(aggregate ->
+                !"SUM".equals(aggregate.function()) || aggregate.distinct())
+            || !(group.input() instanceof Product product)
+            || product.relations().size() <= 1
+            || product.relations().size() > 4
+            || product.joinPredicates().isEmpty()) {
+            return false;
+        }
+
+        var directRelations = directProductRelations(product);
+        if (directRelations.isNone()) {
+            return false;
+        }
+        if (directRelations.get().stream().noneMatch(relation -> relation.filterCondition().isSome())) {
+            return false;
+        }
+
+        if (group.aggregates().stream().map(IRExpression.Aggregate::argument).anyMatch(argument ->
+            !canRenderDirectExpression(argument))) {
+            return false;
+        }
+
+        var relations = directRelations.get();
+        if (relations.stream().anyMatch(relation -> relation.filterCondition().isSome()
+            && !canRenderDirectCondition(relation.filterCondition().get()))) {
+            return false;
+        }
+
+        var presenceColumns = new LinkedHashSet<String>();
+        var filterConditions = new ArrayList<Condition>();
+        for (var relation : relations) {
+            if (relation.filterCondition().isSome()) {
+                var condition = relation.filterCondition().get();
+                filterConditions.add(condition);
+                presenceColumns.addAll(ExpressionSqlRenderer.collectColumnsFromCondition(condition));
+            }
+        }
+        product.joinPredicates().forEach(predicate -> {
+            presenceColumns.add(qualifiedJoinAttribute(product, predicate.leftRelIndex(), predicate.leftAttr()));
+            presenceColumns.add(qualifiedJoinAttribute(product, predicate.rightRelIndex(), predicate.rightAttr()));
+        });
+        if (presenceColumns.isEmpty()) {
+            return false;
+        }
+
+        var requiredColumns = new LinkedHashSet<>(presenceColumns);
+        requiredColumns.addAll(group.groupingAttributes());
+        group.aggregates().stream()
+            .map(IRExpression.Aggregate::argument)
+            .map(ExpressionSqlRenderer::collectColumns)
+            .forEach(requiredColumns::addAll);
+
+        var bindings = new LinkedHashMap<String, ColumnBinding>();
+        for (var columnName : requiredColumns) {
+            var binding = bindDirectProductColumn(relations, columnName);
+            if (binding.isNone()) {
+                return false;
+            }
+            bindings.put(columnName, binding.get());
+        }
+
+        var aliases = new LinkedHashMap<String, String>();
+        var columns = new ArrayList<>(requiredColumns);
+        for (int i = 0; i < columns.size(); i++) {
+            aliases.put(columns.get(i), "direct_group_attr_" + i);
+        }
+
+        var anchorColumn = presenceColumns.getFirst();
+        var anchorBinding = bindings.get(anchorColumn);
+        var anchorAlias = aliases.get(anchorColumn);
+
+        var ps = new PlainSelect();
+        ps.setFromItem(tableAs(
+            attrTable(anchorBinding.relation().tableName(), anchorBinding.sourceAttribute()),
+            anchorAlias
+        ));
+
+        var joins = buildDirectProductJoins(
+            product,
+            columns,
+            aliases,
+            bindings,
+            anchorColumn,
+            presenceColumns
+        );
+        if (joins.isNone()) {
+            return false;
+        }
+        if (!joins.get().joins().isEmpty()) {
+            ps.setJoins(joins.get().joins());
+        }
+
+        var relationIdExpressions = new ArrayList<Expression>();
+        for (int relationIndex = 0; relationIndex < product.relations().size(); relationIndex++) {
+            var relationAnchor = joins.get().relationAnchors().get(relationIndex);
+            if (relationAnchor == null) {
+                return false;
+            }
+            relationIdExpressions.add(column(relationAnchor, "id"));
+        }
+        var productId = dialect.productRowIdExpressionRenderer().render(relationIdExpressions, product.nodeId());
+        ps.addSelectItem(groupRepresentativeId(productId, group), new Alias("id", true));
+
+        if (!filterConditions.isEmpty()) {
+            var predicates = new ArrayList<Expression>();
+            for (var condition : filterConditions) {
+                var predicate = renderDirectCondition(condition, aliases);
+                if (predicate.isNone()) {
+                    return false;
+                }
+                predicates.add(paren(predicate.get()));
+            }
+            ps.setWhere(andAll(predicates));
+        }
+
+        var groupingProjections = java.util.stream.IntStream.range(0, group.groupingAttributes().size())
+            .mapToObj(index -> directGroupingProjection(group.groupingAttributes().get(index), aliases, index))
+            .toList();
+        for (var projection : groupingProjections) {
+            ps.addSelectItem(projection.presentExpr(), new Alias(projection.presentAlias(), true));
+            ps.addSelectItem(projection.valueExpr(), new Alias(projection.valueAlias(), true));
+            ps.addGroupByColumnReference(projection.valueExpr());
+        }
+
+        for (var aggregate : group.aggregates()) {
+            var aggregateFunction = fn(aggregate.function(), renderDirectExpression(aggregate.argument(), aliases));
+            ps.addSelectItem(aggregateFunction, new Alias(aggregate.alias(), true));
+        }
+
+        ctx.addCTE(groupedDataName, ps);
+        return true;
+    }
+
     private boolean addDirectGlobalSumCTE(
         RenderContext ctx,
         String groupedDataName,
@@ -313,12 +454,12 @@ class GroupRenderer {
         ));
         ps.addSelectItem(groupRepresentativeId(column(anchorAlias, "id"), group), new Alias("id", true));
 
-        var joins = buildDirectProductJoins(product, columns, aliases, bindings, anchorColumn);
+        var joins = buildDirectProductJoins(product, columns, aliases, bindings, anchorColumn, new LinkedHashSet<>(columns));
         if (joins.isNone()) {
             return false;
         }
-        if (!joins.get().isEmpty()) {
-            ps.setJoins(joins.get());
+        if (!joins.get().joins().isEmpty()) {
+            ps.setJoins(joins.get().joins());
         }
 
         var predicate = renderDirectCondition(filter.condition(), aliases);
@@ -338,12 +479,13 @@ class GroupRenderer {
         return true;
     }
 
-    private Option<List<Join>> buildDirectProductJoins(
+    private Option<DirectProductJoins> buildDirectProductJoins(
         Product product,
         List<String> columns,
         LinkedHashMap<String, String> aliases,
         LinkedHashMap<String, ColumnBinding> bindings,
-        String anchorColumn
+        String anchorColumn,
+        LinkedHashSet<String> presenceColumns
     ) {
         var joins = new ArrayList<Join>();
         var joinedColumns = new HashSet<String>();
@@ -366,10 +508,11 @@ class GroupRenderer {
                 }
 
                 var alias = aliases.get(columnName);
-                joins.add(join(
-                    tableAs(attrTable(binding.relation().tableName(), binding.sourceAttribute()), alias),
-                    new EqualsTo(column(alias, "id"), column(relationAnchor, "id"))
-                ));
+                var attrTable = tableAs(attrTable(binding.relation().tableName(), binding.sourceAttribute()), alias);
+                var idEquals = new EqualsTo(column(alias, "id"), column(relationAnchor, "id"));
+                joins.add(presenceColumns.contains(columnName)
+                    ? join(attrTable, idEquals)
+                    : leftJoin(attrTable, idEquals));
                 joinedColumns.add(columnName);
                 progressed = true;
             }
@@ -393,7 +536,7 @@ class GroupRenderer {
             relationAnchors.put(bridge.newColumn().relationIndex(), bridge.newAlias());
         }
 
-        return Option.some(joins);
+        return Option.some(new DirectProductJoins(joins, relationAnchors));
     }
 
     private Option<JoinBridge> nextJoinBridge(
@@ -444,6 +587,75 @@ class GroupRenderer {
         }
 
         return Option.none();
+    }
+
+    private Option<List<DirectRelation>> directProductRelations(Product product) {
+        var relations = new ArrayList<DirectRelation>();
+        for (int index = 0; index < product.relations().size(); index++) {
+            var relation = directProductRelation(index, product.relations().get(index));
+            if (relation.isNone()) {
+                return Option.none();
+            }
+            relations.add(relation.get());
+        }
+        return Option.some(relations);
+    }
+
+    private Option<DirectRelation> directProductRelation(int relationIndex, Relation relation) {
+        return switch (relation) {
+            case Relation.Table table ->
+                Option.some(new DirectRelation(relationIndex, table.alias(), table, Option.none()));
+            case Relation.Subquery(var alias, var ir, _) -> directFilteredUnaryTable(ir)
+                .map(filtered -> new DirectRelation(relationIndex, alias, filtered.relation(), Option.some(filtered.condition())));
+        };
+    }
+
+    private Option<FilteredTable> directFilteredUnaryTable(nnsql.query.ir.IRNode node) {
+        if (!(node instanceof nnsql.query.ir.Return ret)
+            || !(ret.input() instanceof Filter filter)
+            || !(filter.input() instanceof Product product)
+            || product.relations().size() != 1
+            || !product.joinPredicates().isEmpty()
+            || !(product.relations().getFirst() instanceof Relation.Table relation)
+            || !returnKeepsBaseColumns(ret, relation)) {
+            return Option.none();
+        }
+
+        return Option.some(new FilteredTable(relation, filter.condition()));
+    }
+
+    private boolean returnKeepsBaseColumns(nnsql.query.ir.Return ret, Relation.Table relation) {
+        if (ret.selectStar()) {
+            return true;
+        }
+
+        for (var attribute : ret.selectedAttributes()) {
+            if (!(attribute instanceof nnsql.query.ir.Return.ColumnAttributeRef(var source, var alias))
+                || !alias.equals(unqualifiedAttribute(source.columnName(), relation))
+                || !relation.attributes().contains(alias)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Option<ColumnBinding> bindDirectProductColumn(List<DirectRelation> relations, String columnName) {
+        for (var relation : relations) {
+            var sourceAttribute = unqualifiedAttribute(columnName, relation);
+            if (relation.relation().attributes().contains(sourceAttribute)) {
+                return Option.some(new ColumnBinding(relation.relationIndex(), relation.relation(), sourceAttribute));
+            }
+        }
+
+        return Option.none();
+    }
+
+    private String unqualifiedAttribute(String qualifiedAttribute, DirectRelation relation) {
+        var outputPrefix = relation.outputAlias() + "_";
+        if (qualifiedAttribute.startsWith(outputPrefix)) {
+            return qualifiedAttribute.substring(outputPrefix.length());
+        }
+        return unqualifiedAttribute(qualifiedAttribute, relation.relation());
     }
 
     private Expression groupRepresentativeId(Expression inputIdExpression, Group group) {
@@ -710,6 +922,26 @@ class GroupRenderer {
         int relationIndex,
         Relation.Table relation,
         String sourceAttribute
+    ) {
+    }
+
+    private record DirectRelation(
+        int relationIndex,
+        String outputAlias,
+        Relation.Table relation,
+        Option<Condition> filterCondition
+    ) {
+    }
+
+    private record FilteredTable(
+        Relation.Table relation,
+        Condition condition
+    ) {
+    }
+
+    private record DirectProductJoins(
+        List<Join> joins,
+        HashMap<Integer, String> relationAnchors
     ) {
     }
 
