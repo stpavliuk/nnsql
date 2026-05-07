@@ -2,6 +2,7 @@ package nnsql.query.renderer.sql;
 
 import net.sf.jsqlparser.expression.*;
 import net.sf.jsqlparser.expression.operators.relational.EqualsTo;
+import net.sf.jsqlparser.expression.operators.relational.InExpression;
 import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
 import net.sf.jsqlparser.statement.select.*;
 
@@ -185,12 +186,21 @@ class GroupRenderer {
     ) {
         if (group.groupingAttributes().isEmpty()
             || group.aggregates().isEmpty()
-            || group.aggregates().stream().anyMatch(aggregate ->
-                !"SUM".equals(aggregate.function()) || aggregate.distinct())
-            || !(group.input() instanceof Product product)
-            || product.relations().size() <= 1
+            || group.aggregates().stream().anyMatch(aggregate -> !supportsDirectProductGroupAggregate(aggregate))) {
+            return false;
+        }
+
+        var filteredProduct = filteredProductInput(group.input());
+        if (filteredProduct.isNone()) {
+            return false;
+        }
+
+        var product = filteredProduct.get().product();
+        var outerCondition = filteredProduct.get().condition();
+        if (product.relations().size() <= 1
             || product.relations().size() > 4
-            || product.joinPredicates().isEmpty()) {
+            || product.joinPredicates().isEmpty()
+            || outerCondition.stream().anyMatch(condition -> !canRenderDirectCondition(condition))) {
             return false;
         }
 
@@ -198,7 +208,8 @@ class GroupRenderer {
         if (directRelations.isNone()) {
             return false;
         }
-        if (directRelations.get().stream().noneMatch(relation -> relation.filterCondition().isSome())) {
+        if (outerCondition.isNone()
+            && directRelations.get().stream().noneMatch(relation -> relation.filterCondition().isSome())) {
             return false;
         }
 
@@ -222,6 +233,9 @@ class GroupRenderer {
                 presenceColumns.addAll(ExpressionSqlRenderer.collectColumnsFromCondition(condition));
             }
         }
+        outerCondition.stream()
+            .map(ExpressionSqlRenderer::collectColumnsFromCondition)
+            .forEach(presenceColumns::addAll);
         product.joinPredicates().forEach(predicate -> {
             presenceColumns.add(qualifiedJoinAttribute(product, predicate.leftRelIndex(), predicate.leftAttr()));
             presenceColumns.add(qualifiedJoinAttribute(product, predicate.rightRelIndex(), predicate.rightAttr()));
@@ -288,15 +302,22 @@ class GroupRenderer {
         var productId = dialect.productRowIdExpressionRenderer().render(relationIdExpressions, product.nodeId());
         ps.addSelectItem(groupRepresentativeId(productId, group), new Alias("id", true));
 
-        if (!filterConditions.isEmpty()) {
-            var predicates = new ArrayList<Expression>();
-            for (var condition : filterConditions) {
-                var predicate = renderDirectCondition(condition, aliases);
-                if (predicate.isNone()) {
-                    return false;
-                }
-                predicates.add(paren(predicate.get()));
+        var predicates = new ArrayList<Expression>();
+        if (outerCondition.isSome()) {
+            var predicate = renderDirectCondition(outerCondition.get(), aliases);
+            if (predicate.isNone()) {
+                return false;
             }
+            predicates.add(paren(predicate.get()));
+        }
+        for (var condition : filterConditions) {
+            var predicate = renderDirectCondition(condition, aliases);
+            if (predicate.isNone()) {
+                return false;
+            }
+            predicates.add(paren(predicate.get()));
+        }
+        if (!predicates.isEmpty()) {
             ps.setWhere(andAll(predicates));
         }
 
@@ -311,11 +332,17 @@ class GroupRenderer {
 
         for (var aggregate : group.aggregates()) {
             var aggregateFunction = fn(aggregate.function(), renderDirectExpression(aggregate.argument(), aliases));
+            aggregateFunction.setDistinct(aggregate.distinct());
             ps.addSelectItem(aggregateFunction, new Alias(aggregate.alias(), true));
         }
 
         ctx.addCTE(groupedDataName, ps);
         return true;
+    }
+
+    private boolean supportsDirectProductGroupAggregate(IRExpression.Aggregate aggregate) {
+        return ("SUM".equals(aggregate.function()) && !aggregate.distinct())
+            || ("COUNT".equals(aggregate.function()) && aggregate.distinct());
     }
 
     private boolean addDirectGlobalSumCTE(
@@ -737,8 +764,38 @@ class GroupRenderer {
             case Condition.Or(var operands) -> renderDirectLogicalCondition(operands, aliases, false);
             case Condition.Not(var operand) -> renderDirectCondition(operand, aliases)
                 .map(expr -> not(paren(expr)));
-            case Condition.IsNull _, Condition.Exists _, Condition.InSubquery _ -> Option.none();
+            case Condition.InSubquery(var left, var subquery, var isNegated) ->
+                renderDirectMembershipCondition(left, subquery, isNegated, aliases);
+            case Condition.IsNull _, Condition.Exists _ -> Option.none();
         };
+    }
+
+    private Option<Expression> renderDirectMembershipCondition(
+        IRExpression left,
+        nnsql.query.ir.IRNode subquery,
+        boolean isNegated,
+        LinkedHashMap<String, String> aliases
+    ) {
+        if (!canRenderDirectExpression(left)) {
+            return Option.none();
+        }
+
+        var membership = renderDirectSimpleMembershipSubquery(subquery);
+        if (membership.isNone()) {
+            return Option.none();
+        }
+
+        var inExpression = new InExpression();
+        inExpression.setLeftExpression(renderDirectExpression(left, aliases));
+        var right = new ParenthesedSelect();
+        right.setSelect(membership.get().values());
+        inExpression.setRightExpression(right);
+        inExpression.setNot(isNegated);
+
+        if (!isNegated || membership.get().nullRows().isNone()) {
+            return Option.some(inExpression);
+        }
+        return Option.some(and(inExpression, notExists(membership.get().nullRows().get())));
     }
 
     private Option<Expression> renderDirectLogicalCondition(
@@ -768,8 +825,147 @@ class GroupRenderer {
             case Condition.Or(var operands) ->
                 operands.stream().allMatch(this::canRenderDirectCondition);
             case Condition.Not(var operand) -> canRenderDirectCondition(operand);
-            case Condition.IsNull _, Condition.Exists _, Condition.InSubquery _ -> false;
+            case Condition.InSubquery(var left, var subquery, _) ->
+                canRenderDirectExpression(left) && renderDirectSimpleMembershipSubquery(subquery).isSome();
+            case Condition.IsNull _, Condition.Exists _ -> false;
         };
+    }
+
+    private Option<DirectMembershipSubquery> renderDirectSimpleMembershipSubquery(nnsql.query.ir.IRNode subquery) {
+        if (!(subquery instanceof nnsql.query.ir.Return returnNode)
+            || returnNode.selectStar()
+            || returnNode.selectedAttributes().size() != 1
+            || !(returnNode.selectedAttributes().getFirst().source() instanceof IRExpression.ColumnRef(var selectedColumn))) {
+            return Option.none();
+        }
+
+        return simpleSingleTableMembershipInput(returnNode.input())
+            .flatMap(input -> renderDirectSimpleMembershipSubquery(input, selectedColumn));
+    }
+
+    private Option<SimpleMembershipInput> simpleSingleTableMembershipInput(nnsql.query.ir.IRNode node) {
+        return switch (node) {
+            case Product product when product.relations().size() == 1
+                && product.joinPredicates().isEmpty()
+                && product.relations().getFirst() instanceof Relation.Table relation ->
+                Option.some(new SimpleMembershipInput(relation, Option.none()));
+            case Filter(var input, var condition, _) -> simpleSingleTableMembershipInput(input)
+                .map(membership -> new SimpleMembershipInput(membership.relation(), Option.some(condition)));
+            default -> Option.none();
+        };
+    }
+
+    private Option<DirectMembershipSubquery> renderDirectSimpleMembershipSubquery(
+        SimpleMembershipInput input,
+        String selectedColumn
+    ) {
+        if (input.condition().isSome() && !canRenderDirectCondition(input.condition().get())) {
+            return Option.none();
+        }
+
+        var requiredColumns = new ArrayList<String>();
+        input.condition().stream()
+            .map(ExpressionSqlRenderer::collectColumnsFromCondition)
+            .forEach(requiredColumns::addAll);
+        requiredColumns.add(selectedColumn);
+        requiredColumns = new ArrayList<>(requiredColumns.stream().distinct().toList());
+        if (!allAttributesBelongToRelation(requiredColumns, input.relation())) {
+            return Option.none();
+        }
+
+        var aliases = directMembershipAliases(requiredColumns);
+        var anchorColumn = requiredColumns.getFirst();
+        var values = new PlainSelect();
+        values.addSelectItem(column(aliases.get(selectedColumn), "v"));
+        values.setFromItem(tableAs(
+            attrTable(input.relation().tableName(), unqualifiedAttribute(anchorColumn, input.relation())),
+            aliases.get(anchorColumn)
+        ));
+
+        var joins = new ArrayList<Join>();
+        for (var columnName : requiredColumns) {
+            if (columnName.equals(anchorColumn)) {
+                continue;
+            }
+            var alias = aliases.get(columnName);
+            joins.add(join(
+                tableAs(attrTable(input.relation().tableName(), unqualifiedAttribute(columnName, input.relation())), alias),
+                new EqualsTo(column(alias, "id"), column(aliases.get(anchorColumn), "id"))
+            ));
+        }
+        if (!joins.isEmpty()) {
+            values.setJoins(joins);
+        }
+
+        if (input.condition().isSome()) {
+            var condition = renderDirectCondition(input.condition().get(), aliases);
+            if (condition.isNone()) {
+                return Option.none();
+            }
+            values.setWhere(condition.get());
+        }
+
+        var nullRows = directMembershipNullRows(input, selectedColumn, aliases, anchorColumn);
+        return Option.some(new DirectMembershipSubquery(values, nullRows));
+    }
+
+    private LinkedHashMap<String, String> directMembershipAliases(List<String> requiredColumns) {
+        var aliases = new LinkedHashMap<String, String>();
+        for (int i = 0; i < requiredColumns.size(); i++) {
+            aliases.put(requiredColumns.get(i), "direct_membership_attr_" + i);
+        }
+        return aliases;
+    }
+
+    private Option<PlainSelect> directMembershipNullRows(
+        SimpleMembershipInput input,
+        String selectedColumn,
+        LinkedHashMap<String, String> aliases,
+        String anchorColumn
+    ) {
+        var anchorAlias = aliases.get(anchorColumn);
+        var selectedProbeAlias = aliases.get(selectedColumn) + "_null_probe";
+
+        var nullProbe = new PlainSelect();
+        nullProbe.addSelectItem(new AllColumns());
+        nullProbe.setFromItem(tableAs(
+            attrTable(input.relation().tableName(), unqualifiedAttribute(selectedColumn, input.relation())),
+            selectedProbeAlias
+        ));
+        nullProbe.setWhere(new EqualsTo(column(selectedProbeAlias, "id"), column(anchorAlias, "id")));
+
+        var nullRows = new PlainSelect();
+        nullRows.addSelectItem(new AllColumns());
+        nullRows.setFromItem(tableAs(
+            attrTable(input.relation().tableName(), unqualifiedAttribute(anchorColumn, input.relation())),
+            anchorAlias
+        ));
+
+        if (input.condition().isSome()) {
+            var joins = new ArrayList<Join>();
+            for (var columnName : ExpressionSqlRenderer.collectColumnsFromCondition(input.condition().get())) {
+                if (columnName.equals(anchorColumn)) {
+                    continue;
+                }
+                var alias = aliases.get(columnName);
+                joins.add(join(
+                    tableAs(attrTable(input.relation().tableName(), unqualifiedAttribute(columnName, input.relation())), alias),
+                    new EqualsTo(column(alias, "id"), column(anchorAlias, "id"))
+                ));
+            }
+            if (!joins.isEmpty()) {
+                nullRows.setJoins(joins);
+            }
+
+            var condition = renderDirectCondition(input.condition().get(), aliases);
+            if (condition.isNone()) {
+                return Option.none();
+            }
+            nullRows.setWhere(and(paren(condition.get()), notExists(nullProbe)));
+        } else {
+            nullRows.setWhere(notExists(nullProbe));
+        }
+        return Option.some(nullRows);
     }
 
     private boolean canRenderDirectExpression(IRExpression expression) {
@@ -1023,6 +1219,18 @@ class GroupRenderer {
     private record FilteredProductInput(
         Product product,
         Option<Condition> condition
+    ) {
+    }
+
+    private record SimpleMembershipInput(
+        Relation.Table relation,
+        Option<Condition> condition
+    ) {
+    }
+
+    private record DirectMembershipSubquery(
+        PlainSelect values,
+        Option<PlainSelect> nullRows
     ) {
     }
 

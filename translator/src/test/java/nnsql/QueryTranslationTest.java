@@ -325,6 +325,39 @@ class QueryTranslationTest {
     }
 
     @Test
+    void testPostgresCompatibleRendererUsesDirectFilteredProductCountDistinctGroup() {
+        var schemaRegistry = new SchemaRegistry();
+        schemaRegistry.registerTable("partsupp", List.of("ps_partkey", "ps_suppkey"));
+        schemaRegistry.registerTable("part", List.of("p_partkey", "p_brand", "p_type", "p_size"));
+        schemaRegistry.registerTable("supplier", List.of("s_suppkey", "s_comment"));
+        var postgresTranslator = new QueryTranslator(schemaRegistry, SQLIRRenderer.postgresCompatible());
+
+        var sql = normalizeWhitespace(postgresTranslator.translate(
+            // language=sql
+            """
+                SELECT p_brand, p_type, p_size, COUNT(DISTINCT ps_suppkey) AS supplier_cnt
+                FROM partsupp, part
+                WHERE p_partkey = ps_partkey
+                  AND p_brand <> 'Brand#45'
+                  AND p_type NOT LIKE 'MEDIUM POLISHED%'
+                  AND p_size IN (49, 14, 23, 45, 19, 3, 36, 9)
+                  AND ps_suppkey NOT IN (
+                      SELECT s_suppkey
+                      FROM supplier
+                      WHERE s_comment LIKE '%Customer%Complaints%'
+                  )
+                GROUP BY p_brand, p_type, p_size
+                """
+        ));
+
+        assertFalse(sql.contains("all_ids_product_0"));
+        assertFalse(sql.contains("product_0_partsupp_ps_suppkey"));
+        assertTrue(sql.contains("COUNT(DISTINCT direct_group_attr_"));
+        assertTrue(sql.contains("NOT IN (SELECT direct_membership_attr_"));
+        assertTrue(sql.contains("NOT EXISTS (SELECT * FROM supplier_s_comment AS direct_membership_attr_"));
+    }
+
+    @Test
     void testInListPredicates() {
         var inSql = normalizeWhitespace(translator.translate(
             "SELECT R.A FROM R WHERE R.B IN (1, 2, 3)"
