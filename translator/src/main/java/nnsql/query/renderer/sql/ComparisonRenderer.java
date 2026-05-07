@@ -590,7 +590,6 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
         var aggregateByAlias = new HashMap<String, IRExpression.Aggregate>();
         group.aggregates().forEach(aggregate -> aggregateByAlias.put(aggregate.alias(), aggregate));
 
-        var innerIdAlias = ctx.nextName("corr_agg_id_");
         var attrAliases = new LinkedHashMap<String, String>();
         subquery.correlations().forEach(correlation ->
             attrAliases.computeIfAbsent(correlation.innerAttribute(), _ -> ctx.nextName("corr_agg_attr_"))
@@ -602,13 +601,25 @@ record ComparisonRenderer(BiFunction<IRNode, RenderContext, String> subqueryRend
             .flatMap(aggregate -> ExpressionSqlRenderer.collectColumns(aggregate.argument()).stream())
             .forEach(attribute -> attrAliases.computeIfAbsent(attribute, _ -> ctx.nextName("corr_agg_attr_")));
 
+        if (correlationInnerAttributes.isEmpty()) {
+            return Optional.empty();
+        }
+
+        var anchorAttribute = correlationInnerAttributes.getFirst();
+        var anchorAlias = attrAliases.get(anchorAttribute);
         var select = new PlainSelect();
-        select.setFromItem(tableAs(relation.tableName() + "__ID", innerIdAlias));
+        select.setFromItem(tableAs(
+            attrTable(relation.tableName(), unqualifiedAttribute(anchorAttribute, relation)),
+            anchorAlias
+        ));
 
         var joins = new ArrayList<Join>();
         attrAliases.forEach((attribute, alias) -> {
+            if (attribute.equals(anchorAttribute)) {
+                return;
+            }
             var attrTable = tableAs(attrTable(relation.tableName(), unqualifiedAttribute(attribute, relation)), alias);
-            var idComparison = new EqualsTo(column(attrTable, "id"), column(innerIdAlias, "id"));
+            var idComparison = new EqualsTo(column(attrTable, "id"), column(anchorAlias, "id"));
             if (correlationInnerAttributes.contains(attribute)) {
                 joins.add(join(attrTable, idComparison));
             } else {

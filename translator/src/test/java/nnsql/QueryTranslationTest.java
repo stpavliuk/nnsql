@@ -1353,7 +1353,8 @@ class QueryTranslationTest {
         ));
 
         assertTrue(sql.contains("SELECT 0.5 * SUM("));
-        assertTrue(sql.contains("FROM lineitem__ID AS corr_agg_id_"));
+        assertTrue(sql.contains("FROM lineitem_l_partkey AS corr_agg_attr_"));
+        assertFalse(sql.contains("FROM lineitem__ID AS corr_agg_id_"));
         assertTrue(sql.contains("lineitem_l_shipdate AS corr_agg_attr_"));
         assertTrue(sql.contains("corr_agg_attr_"));
         assertFalse(sql.contains("corr_subquery_"));
