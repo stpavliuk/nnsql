@@ -259,6 +259,13 @@ final class TpchEnvironmentFactory {
         props.setProperty("password", config.password());
         var connection = DriverManager.getConnection(config.jdbcUrl(), props);
 
+        try {
+            executeSql(connection, "SET jit = off");
+        } catch (SQLException e) {
+            closeQuietly(connection);
+            throw e;
+        }
+
         if (schemaName != null && !schemaName.isBlank()) {
             try {
                 executeSql(connection, "SET search_path TO " + schemaName + ", public");
