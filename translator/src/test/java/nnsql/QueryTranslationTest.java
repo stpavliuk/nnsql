@@ -1019,7 +1019,7 @@ class QueryTranslationTest {
     }
 
     @Test
-    void testPostgresCompatibleRendererMaterializesCtes() {
+    void testPostgresCompatibleRendererMaterializesSharedCtes() {
         var schemaRegistry = new SchemaRegistry();
         schemaRegistry.registerTable("R", List.of("A", "B"));
 
@@ -1028,7 +1028,7 @@ class QueryTranslationTest {
             "SELECT R.A FROM R WHERE R.B > 10"
         ));
 
-        assertTrue(sql.contains("product_0_R_A AS MATERIALIZED"));
+        assertFalse(sql.contains("product_0_R_A AS MATERIALIZED"));
         assertTrue(sql.contains("filter_1_id AS MATERIALIZED"));
     }
 
