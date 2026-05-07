@@ -101,7 +101,7 @@ final class SqlQueryDocument {
             case Function function when function.isAllColumns() -> isAggregateFunction(function);
             case Function function -> isAggregateFunction(function)
                 || function.getParameters() != null
-                && function.getParameters().getExpressions().stream().anyMatch(SqlQueryDocument::containsAggregate);
+                && function.getParameters().stream().anyMatch(SqlQueryDocument::containsAggregate);
             default -> containsAggregateFunctionName(expression.toString());
         };
     }

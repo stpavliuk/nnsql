@@ -65,7 +65,7 @@ class QueryTranslationTest {
         assertTrue(equalityFilterSql.contains("product_0_R_A AS"));
         assertTrue(equalityFilterSql.contains("product_0_R_B AS"));
         assertContainsSql(equalityFilterSql,
-            "filter_1_id AS ( SELECT product_0_R_B.id FROM product_0_R_B WHERE (product_0_R_B.v = 5.0) )"
+            "filter_1_id AS ( SELECT product_0_R_B.id, product_0_R_B.v AS filter_attr_R_B FROM product_0_R_B WHERE (product_0_R_B.v = 5.0) )"
         );
         assertTrue(equalityFilterSql.contains("return_2_attr_R_A"));
 
@@ -192,7 +192,7 @@ class QueryTranslationTest {
         assertTrue(columnComparisonSql.contains("product_0_R_A AS"));
         assertTrue(columnComparisonSql.contains("product_0_R_B AS"));
         assertContainsSql(columnComparisonSql,
-            "filter_1_id AS ( SELECT product_0_R_A.id FROM product_0_R_A JOIN product_0_R_B ON product_0_R_B.id = product_0_R_A.id WHERE (product_0_R_A.v > product_0_R_B.v) )"
+            "filter_1_id AS ( SELECT product_0_R_A.id, product_0_R_A.v AS filter_attr_R_A, product_0_R_B.v AS filter_attr_R_B FROM product_0_R_A JOIN product_0_R_B ON product_0_R_B.id = product_0_R_A.id WHERE (product_0_R_A.v > product_0_R_B.v) )"
         );
         assertTrue(columnComparisonSql.contains("return_2_attr_R_A"));
     }
@@ -546,7 +546,7 @@ class QueryTranslationTest {
         ));
         assertTrue(simpleTpchSql.contains("product_0_customer_c_acctbal"));
         assertContainsSql(simpleTpchSql,
-            "filter_1_id AS ( SELECT product_0_customer_c_acctbal.id FROM product_0_customer_c_acctbal WHERE (product_0_customer_c_acctbal.v > 5000.0) )"
+            "filter_1_id AS ( SELECT product_0_customer_c_acctbal.id, product_0_customer_c_acctbal.v AS filter_attr_customer_c_acctbal FROM product_0_customer_c_acctbal WHERE (product_0_customer_c_acctbal.v > 5000.0) )"
         );
         assertTrue(simpleTpchSql.endsWith("SELECT * FROM return_2_id;"));
 
@@ -560,7 +560,7 @@ class QueryTranslationTest {
                 """
         ));
         assertContainsSql(groupedTpchSql,
-            "filter_3_id AS ( SELECT product_2_customer_c_acctbal.id FROM product_2_customer_c_acctbal JOIN product_2_customer_c_nationkey ON product_2_customer_c_nationkey.id = product_2_customer_c_acctbal.id WHERE ((product_2_customer_c_acctbal.v > 0.0) AND (product_2_customer_c_nationkey.v = 15.0)) )"
+            "filter_3_id AS ( SELECT product_2_customer_c_acctbal.id, product_2_customer_c_acctbal.v AS filter_attr_customer_c_acctbal, product_2_customer_c_nationkey.v AS filter_attr_customer_c_nationkey FROM product_2_customer_c_acctbal JOIN product_2_customer_c_nationkey ON product_2_customer_c_nationkey.id = product_2_customer_c_acctbal.id WHERE ((product_2_customer_c_acctbal.v > 0.0) AND (product_2_customer_c_nationkey.v = 15.0)) )"
         );
         assertTrue(groupedTpchSql.contains("return_5_attr_avg_accball"));
         assertTrue(groupedTpchSql.contains("product_0_customer_c_acctbal.v > (SELECT v FROM return_5_attr_avg_accball)"));
@@ -575,10 +575,10 @@ class QueryTranslationTest {
         ));
         assertTrue(sql.contains("product_0_ctr_B"));
         assertContainsSql(sql,
-            "filter_2_id AS ( SELECT product_1_R_B.id FROM product_1_R_B WHERE (product_1_R_B.v > 5.0) )"
+            "filter_2_id AS ( SELECT product_1_R_B.id, product_1_R_B.v AS filter_attr_R_B FROM product_1_R_B WHERE (product_1_R_B.v > 5.0) )"
         );
         assertContainsSql(sql,
-            "filter_4_id AS ( SELECT product_0_ctr_B.id FROM product_0_ctr_B WHERE (product_0_ctr_B.v = 10.0) )"
+            "filter_4_id AS ( SELECT product_0_ctr_B.id, product_0_ctr_B.v AS filter_attr_ctr_B FROM product_0_ctr_B WHERE (product_0_ctr_B.v = 10.0) )"
         );
         assertTrue(sql.contains("return_5_attr_A"));
     }
@@ -1150,10 +1150,10 @@ class QueryTranslationTest {
         assertTrue(sql.contains("product_2_R_B"));
         assertTrue(sql.contains("product_1_c1_B"));
         assertContainsSql(sql,
-            "filter_3_id AS ( SELECT product_2_R_B.id FROM product_2_R_B WHERE (product_2_R_B.v > 5.0) )"
+            "filter_3_id AS ( SELECT product_2_R_B.id, product_2_R_B.v AS filter_attr_R_B FROM product_2_R_B WHERE (product_2_R_B.v > 5.0) )"
         );
         assertContainsSql(sql,
-            "filter_5_id AS ( SELECT product_1_c1_B.id FROM product_1_c1_B WHERE (product_1_c1_B.v = 10.0) )"
+            "filter_5_id AS ( SELECT product_1_c1_B.id, product_1_c1_B.v AS filter_attr_c1_B FROM product_1_c1_B WHERE (product_1_c1_B.v = 10.0) )"
         );
         assertTrue(sql.contains("return_7_attr_A"));
     }

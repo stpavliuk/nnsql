@@ -10,7 +10,7 @@ record AggFilterRenderer(ConditionRenderer conditionRenderer) {
     void render(AggFilter aggFilter, RenderContext ctx, String baseName, String inputBaseName) {
         conditionRenderer.renderOptimizedFilterIdSelect(aggFilter.condition(), inputBaseName, ctx)
             .ifPresentOrElse(
-                optimizedFilterId -> ctx.addCTE(idTable(baseName), optimizedFilterId),
+                optimizedFilterId -> ctx.addCTE(idTable(baseName), optimizedFilterId.select()),
                 () -> addFilterIdCTE(ctx, baseName, inputBaseName,
                     conditionRenderer.renderTrue(aggFilter.condition(), inputBaseName, ctx))
             );

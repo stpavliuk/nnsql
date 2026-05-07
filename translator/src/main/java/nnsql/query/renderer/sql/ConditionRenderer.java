@@ -26,7 +26,7 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
         this(new ComparisonRenderer(subqueryRenderer, dialect), dialect);
     }
 
-    java.util.Optional<PlainSelect> renderOptimizedFilterIdSelect(
+    java.util.Optional<OptimizedFilterIdSelect> renderOptimizedFilterIdSelect(
         Condition condition,
         String relationName,
         RenderContext ctx
@@ -84,17 +84,19 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
         ));
     }
 
-    private PlainSelect buildInlineFilterIdSelect(
+    private OptimizedFilterIdSelect buildInlineFilterIdSelect(
         String relationName,
         List<InlinePredicate> inlinePredicates,
         List<ComparisonRenderer.InlinedCorrelatedComparison> inlinedCorrelatedComparisons,
         List<InlinedCorrelatedExists> inlinedCorrelatedExists,
         List<Expression> fallbackConditions
     ) {
-        var requiredColumns = new ArrayList<String>();
-        requiredColumns.addAll(inlinePredicates.stream()
+        var projectedAttributes = inlinePredicates.stream()
             .flatMap(inline -> inline.requiredColumns().stream())
-            .toList());
+            .distinct()
+            .toList();
+        var requiredColumns = new ArrayList<String>();
+        requiredColumns.addAll(projectedAttributes);
         requiredColumns.addAll(inlinedCorrelatedComparisons.stream()
             .flatMap(inlined -> inlined.requiredColumns().stream())
             .toList());
@@ -107,43 +109,42 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
 
         var joins = new ArrayList<net.sf.jsqlparser.statement.select.Join>();
         var whereConditions = new ArrayList<Expression>();
+        var attributeTables = new LinkedHashMap<String, net.sf.jsqlparser.schema.Table>();
         if (requiredColumns.isEmpty() || !fallbackConditions.isEmpty()) {
             var idTbl = table(idTable(relationName));
             ps.addSelectItem(column(idTbl, "id"));
             ps.setFromItem(idTbl);
-            addComputedExprAttributeJoins(
-                relationName,
-                requiredColumns,
-                column(idTbl, "id"),
-                false,
-                Sql.NonCaseJoinMode.SIMPLE_JOIN_WITH_WHERE_ID,
-                joins,
-                whereConditions
-            );
+            addFilterAttributeJoins(relationName, requiredColumns, column(idTbl, "id"), joins, attributeTables);
         } else {
             var anchorColumn = requiredColumns.removeFirst();
             var anchorTable = table(attrTable(relationName, anchorColumn));
             ps.addSelectItem(column(anchorTable, "id"));
             ps.setFromItem(anchorTable);
-            addComputedExprAttributeJoins(
-                relationName,
-                requiredColumns,
-                column(anchorTable, "id"),
-                false,
-                Sql.NonCaseJoinMode.SIMPLE_JOIN_WITH_WHERE_ID,
-                joins,
-                whereConditions
-            );
+            attributeTables.put(anchorColumn, anchorTable);
+            addFilterAttributeJoins(relationName, requiredColumns, column(anchorTable, "id"), joins, attributeTables);
         }
 
-        whereConditions.addAll(inlinePredicates.stream().map(InlinePredicate::predicate).map(Sql::paren).toList());
+        projectedAttributes.forEach(attribute -> {
+            var attrTable = attributeTables.get(attribute);
+            if (attrTable != null) {
+                ps.addSelectItem(column(attrTable, "v"), new net.sf.jsqlparser.expression.Alias(
+                    projectedAttributeColumn(attribute),
+                    true
+                ));
+            }
+        });
+
+        inlinePredicates.stream()
+            .map(InlinePredicate::predicate)
+            .map(Sql::paren)
+            .forEach(whereConditions::add);
         for (var inlinedComparison : inlinedCorrelatedComparisons) {
             joins.add(simpleJoin(inlinedComparison.fromItem()));
             whereConditions.addAll(inlinedComparison.predicates());
         }
-        whereConditions.addAll(inlinedCorrelatedExists.stream()
+        inlinedCorrelatedExists.stream()
             .map(InlinedCorrelatedExists::predicate)
-            .toList());
+            .forEach(whereConditions::add);
         whereConditions.addAll(fallbackConditions);
 
         if (!joins.isEmpty()) {
@@ -155,7 +156,31 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
                 : andAll(whereConditions)
         );
 
-        return ps;
+        return new OptimizedFilterIdSelect(ps, projectedAttributes);
+    }
+
+    private static void addFilterAttributeJoins(
+        String relationName,
+        List<String> requiredColumns,
+        Expression anchorIdExpr,
+        List<net.sf.jsqlparser.statement.select.Join> joins,
+        LinkedHashMap<String, net.sf.jsqlparser.schema.Table> attributeTables
+    ) {
+        for (var columnName : requiredColumns) {
+            var attrTbl = table(attrTable(relationName, columnName));
+            joins.add(join(
+                attrTbl,
+                new net.sf.jsqlparser.expression.operators.relational.EqualsTo(
+                    column(attrTbl, "id"),
+                    anchorIdExpr
+                )
+            ));
+            attributeTables.put(columnName, attrTbl);
+        }
+    }
+
+    static String projectedAttributeColumn(String attribute) {
+        return "filter_attr_" + attribute;
     }
 
     Expression renderTrue(Condition condition, String relationName, RenderContext ctx) {
@@ -753,6 +778,9 @@ record ConditionRenderer(ComparisonRenderer comparisonRenderer, SqlDialect diale
     }
 
     private record InlinePredicate(Condition sourceCondition, Expression predicate, List<String> requiredColumns) {
+    }
+
+    record OptimizedFilterIdSelect(PlainSelect select, List<String> projectedAttributes) {
     }
 
     private record InlinedCorrelatedExists(Expression predicate, List<String> requiredColumns) {
